@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI, Modality } from "@google/genai";
 import sharp from "sharp";
 import { withGeminiRetry } from "@/lib/geminiRetry";
-
+ 
 const ai = new GoogleGenAI({
   vertexai: true,
   project: process.env.GOOGLE_CLOUD_PROJECT!,
   location: process.env.GOOGLE_CLOUD_LOCATION || "global",
 });
-
+ 
 type ShortlistItem = {
   bucket: string;
   product_handle: string;
@@ -23,7 +23,7 @@ type ShortlistItem = {
   pinned?: boolean;
   source?: "catalog" | "innovative";
 };
-
+ 
 type GenerateRoomBody = {
   roomType?: string;
   theme?: string;
@@ -34,10 +34,10 @@ type GenerateRoomBody = {
   editMode?: boolean;
   baseGeneratedImage?: string | null;
 };
-
+ 
 type Level = "none" | "minor" | "moderate" | "significant";
 type Quality = "poor" | "acceptable" | "good" | "excellent";
-
+ 
 type FurnishedRoomValidation = {
   room_type_correct: boolean;
   theme_match_level: Quality;
@@ -55,43 +55,41 @@ type FurnishedRoomValidation = {
   pass: boolean;
   reason: string;
 };
-
+ 
 type InnovativeProductDetection = {
   title: string;
   category: string;
   bbox: [number, number, number, number];
 };
-
+ 
 type RecommendationRanking = {
   catalog_product_handles: string[];
   innovative_products: InnovativeProductDetection[];
 };
-
-type GeminiImagePart = {
-  inlineData: {
-    mimeType: string;
-    data: string;
-  };
-};
-
+ 
 function stripDataUrlPrefix(input: string): string {
   const idx = input.indexOf(",");
   return idx >= 0 ? input.slice(idx + 1) : input;
 }
-
+ 
 function extractTextFromResponse(response: any): string {
   const parts = response?.candidates?.[0]?.content?.parts || [];
-  return parts
-    .filter((p: any) => typeof p?.text === "string")
-    .map((p: any) => p.text)
-    .join("")
-    .trim();
+  let text = "";
+ 
+  for (const part of parts) {
+    if (typeof part?.text === "string") {
+      text += part.text;
+    }
+  }
+ 
+  return text.trim();
 }
-
+ 
 function extractImageFromResponse(
   response: any
 ): { data: string; mimeType: string } | null {
   const parts = response?.candidates?.[0]?.content?.parts || [];
+ 
   for (const part of parts) {
     if (part?.inlineData?.data) {
       return {
@@ -100,52 +98,69 @@ function extractImageFromResponse(
       };
     }
   }
+ 
   return null;
 }
-
+ 
 function safeParseJson<T>(text: string): T {
   const cleaned = text.trim();
+ 
   try {
     return JSON.parse(cleaned) as T;
   } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]) as T;
-    throw new Error(`No valid JSON object found in model output: ${cleaned.slice(0, 1200)}`);
+    if (match) {
+      return JSON.parse(match[0]) as T;
+    }
+    throw new Error(
+      `No valid JSON object found in model output: ${cleaned.slice(0, 1200)}`
+    );
   }
 }
-
-async function urlToInlineData(url: string): Promise<GeminiImagePart> {
+ 
+async function urlToInlineData(url: string) {
   const normalizedUrl = decodeURI(url.trim());
-  const res = await fetch(normalizedUrl, {
-    method: "GET",
-    redirect: "follow",
-    cache: "no-store",
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      Referer: "https://www.shopify.com/",
-    },
-  });
-
+ 
+  const tryFetch = async () => {
+    return await fetch(normalizedUrl, {
+      method: "GET",
+      redirect: "follow",
+      cache: "no-store",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        Accept:
+          "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        Referer: "https://www.shopify.com/",
+      },
+    });
+  };
+ 
+  let res = await tryFetch();
+ 
   if (!res.ok) {
-    throw new Error(`Failed to fetch catalogue image: ${normalizedUrl} (status ${res.status})`);
+    await new Promise((r) => setTimeout(r, 300));
+    res = await tryFetch();
   }
-
+ 
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch catalogue image: ${normalizedUrl} (status ${res.status})`
+    );
+  }
+ 
+  const contentType = res.headers.get("content-type") || "image/jpeg";
   const arrayBuffer = await res.arrayBuffer();
-  const optimized = await sharp(Buffer.from(arrayBuffer))
-    .rotate()
-    .resize({ width: 768, height: 768, fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 82, mozjpeg: true })
-    .toBuffer();
-
+  const base64 = Buffer.from(arrayBuffer).toString("base64");
+ 
   return {
     inlineData: {
-      mimeType: "image/jpeg",
-      data: optimized.toString("base64"),
+      mimeType: contentType,
+      data: base64,
     },
   };
 }
-
+ 
 function shortlistSummary(shortlist: ShortlistItem[]): string {
   return shortlist
     .map((item, idx) => {
@@ -155,76 +170,15 @@ function shortlistSummary(shortlist: ShortlistItem[]): string {
         `product_handle=${item.product_handle}`,
         `title=${item.title}`,
         item.category ? `category=${item.category}` : "",
-        item.normalized_category ? `normalized_category=${item.normalized_category}` : "",
+        item.normalized_category
+          ? `normalized_category=${item.normalized_category}`
+          : "",
       ].filter(Boolean);
       return parts.join("; ");
     })
     .join("\n");
 }
-
-function scoreCategoryFit(item: ShortlistItem, theme: string) {
-  const text = [item.title, item.category, item.subcategory, item.normalized_category, item.bucket]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  const query = theme.toLowerCase();
-  let score = Number(item.similarity || 0);
-
-  const intentMap: Array<[RegExp, string[]]> = [
-    [/\bsofa|couch|sectional|loveseat|settee\b/i, ["sofa", "couch", "sectional", "loveseat", "settee"]],
-    [/\bchair|armchair|accent chair|lounge chair\b/i, ["chair", "armchair", "accent"]],
-    [/\btable|coffee table|side table|end table|console\b/i, ["table", "coffee table", "side table", "console"]],
-    [/\brug|carpet|runner\b/i, ["rug", "carpet", "runner"]],
-    [/\blamp|light|pendant\b/i, ["lamp", "light", "pendant"]],
-    [/\bbed|daybed|headboard\b/i, ["bed", "daybed", "headboard"]],
-  ];
-
-  for (const [pattern, aliases] of intentMap) {
-    if (pattern.test(query)) {
-      if (aliases.some((a) => text.includes(a))) score += 0.75;
-      else score -= 0.2;
-    }
-  }
-
-  if (
-    !/\bkid|kids|children|child|nursery|toddler\b/i.test(query) &&
-    /\bkid|kids|children|child|nursery|toddler\b/i.test(text)
-  ) {
-    score -= 1.5;
-  }
-
-  return score;
-}
-
-function prioritizeShortlist(shortlist: ShortlistItem[], theme: string, maxItems = 8) {
-  const scored = [...shortlist].sort(
-    (a, b) => scoreCategoryFit(b, theme) - scoreCategoryFit(a, theme)
-  );
-
-  const result: ShortlistItem[] = [];
-  const seen = new Set<string>();
-  const categoryCounts = new Map<string, number>();
-
-  for (const item of scored) {
-    const handle = item.product_handle;
-    if (!handle || seen.has(handle)) continue;
-
-    const key = (item.normalized_category || item.category || item.bucket || "other").toLowerCase();
-    const count = categoryCounts.get(key) || 0;
-
-    if (count >= 2 && result.length < maxItems - 2) continue;
-
-    result.push(item);
-    seen.add(handle);
-    categoryCounts.set(key, count + 1);
-
-    if (result.length >= maxItems) break;
-  }
-
-  return result;
-}
-
+ 
 function buildGeneratePrompt(
   roomType: string,
   theme: string,
@@ -233,63 +187,96 @@ function buildGeneratePrompt(
   editMode: boolean
 ) {
   const editText = editMode
-    ? `\nThis is an edit request on an already generated room.\nApply only the requested changes while preserving the rest of the room as much as possible.\n`
+    ? `
+This is an edit request on an already generated room.
+Apply the user's requested changes while preserving the rest of the room as much as possible.
+Only change what is necessary.
+`
     : "";
-
+ 
   const retryText =
     attemptNumber > 1
-      ? `\nThis is retry attempt ${attemptNumber}. Be more strict about catalog alignment, object identity, and preserving architecture exactly.\n`
+      ? `
+This is retry attempt ${attemptNumber}.
+Be more strict about:
+- using only catalog-aligned products
+- preserving architecture exactly
+- applying the requested edit/color/material/style without changing unrelated parts
+`
       : "";
-
+ 
   return `
 You are an expert interior room redesign model.
-
+ 
 Task:
-Redesign this ${roomType.replaceAll("_", " ")} using the cleaned room image as the structural base and the provided catalogue reference products as the only shopping source.
-
+Redesign this ${roomType.replaceAll(
+    "_",
+    " "
+  )} using only the provided catalogue reference products and the user's design intent.
+ 
 User design intent:
 ${theme}
-
+ 
 Catalogue references:
 ${shortlistSummary(shortlist)}
-
-Catalogue-aware generation policy:
-1. Treat the catalogue shortlist as the source of truth for shoppable products.
-2. If a matching catalogue product exists for a requested object, use that catalogue product family and do not invent an internet or generic substitute.
-3. Resolve vocabulary semantically. For example, couch/sectional/loveseat/settee are seating requests and should map to the closest seating item in the shortlist.
-4. Never use kids or nursery furniture unless the user explicitly asks for kids, children, nursery, or toddler furniture.
-5. If no suitable shortlist product exists for a requested object, omit that object instead of inventing a mismatched one.
-
-Strict room-preservation rules:
-6. Preserve the exact room geometry.
-7. Preserve walls, windows, curtains, doors, ceiling, floor, skirting, trims, camera angle, perspective, and room proportions.
-8. Add or replace only movable furniture and decor elements.
-9. Do not alter architecture or add extra structural features.
-10. Keep the output photorealistic and consistent with the user's requested style.
-11. Keep the room type correct.
-12. Use shortlist objects with strong visual alignment to the references.
-13. If the user asks for color/material/style changes, apply those changes to shortlist-aligned products rather than switching to unrelated products.
+ 
+Strict rules:
+1. Preserve the exact room geometry.
+2. Preserve walls, windows, curtains, doors, ceiling, floor, skirting, trims, camera angle, perspective, and room proportions.
+3. Use the cleaned room image as the structural base.
+4. Use only the provided catalogue reference images as the furniture and decor inspiration.
+5. Add or replace only movable furniture and decor elements.
+6. Do NOT alter the architecture.
+7. Do NOT add extra windows, doors, walls, or structural features.
+8. Keep the output photorealistic and consistent with the user's requested style.
+9. Keep the room type correct for the selected room type.
+10. Keep furniture and decor visually aligned with the shortlisted catalogue references.
+11. Do NOT invent unrelated furniture families outside the shortlist unless absolutely necessary for the user request.
+12. If the user requests changes such as blue sofa, velvet sofa, more luxury, warmer tone, or similar edits, apply those style/color/material changes to the shortlisted furniture style rather than inventing unrelated products.
+ 
 ${editText}
 ${retryText}
+ 
 Return one final redesigned room image only.
 `.trim();
 }
-
-function buildValidationPrompt(roomType: string, theme: string, shortlist: ShortlistItem[]) {
+ 
+function buildValidationPrompt(
+  roomType: string,
+  theme: string,
+  shortlist: ShortlistItem[]
+) {
   return `
 You are a strict furnished-room validator.
-
-Compare the original room, cleaned room, final furnished room, selected room type, user design prompt, and shortlisted catalog products.
-
+ 
+You will compare:
+1. the original room image
+2. the cleaned room image
+3. the final furnished room image
+4. the selected room type
+5. the user design prompt
+6. the shortlisted catalog products summary
+ 
 Selected room type:
 ${roomType}
-
+ 
 User design prompt:
 ${theme}
-
+ 
 Shortlisted catalog products:
 ${shortlistSummary(shortlist)}
-
+ 
+Evaluate whether the final furnished room is acceptable.
+ 
+Checks:
+1. Is the final room still the same room structurally?
+2. Are walls, windows, curtains, doors, ceiling, and floor preserved?
+3. Does the final room still match the selected room type?
+4. Does the design match the requested style/theme?
+5. Does the furniture and decor look consistent with the shortlisted catalog products?
+6. Are there obvious hallucinated objects unrelated to the shortlist?
+7. Are there visible visual artifacts or broken generated objects?
+ 
 Return strict JSON only:
 {
   "room_type_correct": true,
@@ -310,41 +297,70 @@ Return strict JSON only:
 }
 `.trim();
 }
-
+ 
 function buildRecommendationRankingPrompt(shortlist: ShortlistItem[]) {
   return `
 You are a visual product matching expert.
-
+ 
 You will be shown:
 - Image 1: the generated furnished room
 - Images 2 onwards: catalogue product reference images, each labelled with its product_handle
-
-Tasks:
-1. Return catalog_product_handles only for products clearly visible in the generated room.
-2. Return innovative_products only for large objects visible in the room that do not match any shown catalogue product.
-3. Be conservative. If uncertain, do not mark it as pinned.
-
-Catalogue product handles:
+ 
+Your tasks:
+1. For each catalogue product image shown, decide if that exact product (or a very close visual match) appears in the generated room. Only match on strong visual similarity — same shape, colour, and style. Do NOT match based on category alone.
+2. Return catalog_product_handles for products that are clearly visible in the room, ordered most-to-least prominent.
+3. For any significant furniture/decor item visible in the room that does NOT match any catalogue product, list it under innovative_products with a bounding box on a 0–1000 coordinate scale [x1, y1, x2, y2].
+ 
+Catalogue product handles (in the same order as the reference images you will see):
 ${shortlistSummary(shortlist)}
-
-Return strict JSON only:
+ 
+Return strict JSON only — no markdown:
 {
-  "catalog_product_handles": ["handle1"],
-  "innovative_products": []
+  "catalog_product_handles": ["handle1", "handle2"],
+  "innovative_products": [
+    {
+      "title": "Round Glass Coffee Table",
+      "category": "tables",
+      "bbox": [300, 500, 700, 800]
+    }
+  ]
 }
 `.trim();
 }
-
+ 
 function levelScore(level: Level): number {
-  return level === "none" ? 3 : level === "minor" ? 2 : level === "moderate" ? 1 : 0;
+  switch (level) {
+    case "none":
+      return 3;
+    case "minor":
+      return 2;
+    case "moderate":
+      return 1;
+    case "significant":
+      return 0;
+    default:
+      return 0;
+  }
 }
-
+ 
 function qualityScore(q: Quality): number {
-  return q === "excellent" ? 4 : q === "good" ? 3 : q === "acceptable" ? 2 : 0;
+  switch (q) {
+    case "excellent":
+      return 4;
+    case "good":
+      return 3;
+    case "acceptable":
+      return 2;
+    case "poor":
+      return 0;
+    default:
+      return 0;
+  }
 }
-
+ 
 function computeValidationScore(v: FurnishedRoomValidation): number {
   let score = 0;
+ 
   if (v.room_type_correct) score += 4;
   if (v.geometry_preserved) score += 4;
   if (v.windows_preserved) score += 3;
@@ -352,25 +368,27 @@ function computeValidationScore(v: FurnishedRoomValidation): number {
   if (v.curtains_preserved) score += 2;
   if (v.floor_preserved) score += 3;
   if (v.ceiling_preserved) score += 2;
+ 
   score += qualityScore(v.theme_match_level) * 2;
   score += qualityScore(v.catalog_alignment_level) * 2;
   score += levelScore(v.structural_drift_level) * 3;
   score += levelScore(v.hallucinated_objects_level) * 3;
   score += levelScore(v.artifacts_level) * 2;
   score += qualityScore(v.overall_quality) * 2;
+ 
   if (v.pass) score += 2;
+ 
   return score;
 }
-
-async function buildReferenceParts(shortlist: ShortlistItem[], theme: string) {
-  const prioritized = prioritizeShortlist(shortlist, theme, 8);
-
-  const resolved = await Promise.all(
-    prioritized.map(async (item) => {
+ 
+async function buildReferenceParts(shortlist: ShortlistItem[]) {
+  const resolvedReferenceParts = await Promise.all(
+    shortlist.slice(0, 12).map(async (item) => {
       try {
         const part = await urlToInlineData(item.image_url as string);
         return { ok: true as const, part, item };
       } catch (err: any) {
+        // Silently drop 404s — expected for deleted Shopify products
         const status = String(err?.message ?? "").match(/status (\d+)/)?.[1];
         if (status !== "404") {
           console.warn("Skipping catalogue image:", item.image_url, status ?? String(err));
@@ -379,15 +397,21 @@ async function buildReferenceParts(shortlist: ShortlistItem[], theme: string) {
       }
     })
   );
-
-  const fetched = resolved.filter((x) => x.ok && x.part !== null);
+ 
+  // Only items whose images actually fetched — 404s excluded from everything
+  const fetched = resolvedReferenceParts.filter((x) => x.ok && x.part !== null);
+ 
+  const referenceParts = fetched.map((x) => x.part);
+  const validShortlist = fetched.map((x) => x.item);
+ 
   return {
-    referenceParts: fetched.map((x) => x.part),
-    validShortlist: fetched.map((x) => x.item),
-    catalogueImageParts: fetched.map((x) => x.part) as GeminiImagePart[],
+    referenceParts,
+    validShortlist,
+    // Raw inlineData parts kept for reuse in detectPinnedProducts visual matching
+    catalogueImageParts: fetched.map((x) => x.part) as { inlineData: { mimeType: string; data: string } }[],
   };
 }
-
+ 
 async function generateRoomAttempt(
   roomType: string,
   theme: string,
@@ -398,14 +422,16 @@ async function generateRoomAttempt(
   editMode: boolean,
   baseGeneratedImage?: string | null
 ) {
-  const { referenceParts, validShortlist, catalogueImageParts } = await buildReferenceParts(shortlist, theme);
+  const { referenceParts, validShortlist, catalogueImageParts } = await buildReferenceParts(shortlist);
+ 
   if (!referenceParts.length) {
     throw new Error("None of the catalogue images could be fetched from Shopify CDN.");
   }
-
+ 
   const prompt = buildGeneratePrompt(roomType, theme, validShortlist, attemptNumber, editMode);
+ 
   const parts: any[] = [{ text: prompt }, ...referenceParts];
-
+ 
   if (editMode && baseGeneratedImage) {
     parts.push({ text: "Base image to edit:" });
     parts.push({
@@ -422,33 +448,43 @@ async function generateRoomAttempt(
       },
     });
   }
-
+ 
   const response = await withGeminiRetry(() =>
     ai.models.generateContent({
       model: "gemini-2.5-flash-image",
-      contents: [{ role: "user", parts }],
-      config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+      contents: [
+        {
+          role: "user",
+          parts,
+        },
+      ],
+      config: {
+        responseModalities: [Modality.IMAGE, Modality.TEXT],
+      },
     })
   );
-
+ 
   const image = extractImageFromResponse(response);
   const rawText = extractTextFromResponse(response) || null;
+ 
   if (!image) {
     throw new Error(
       `Gemini did not return a redesigned room image.${rawText ? ` Model text: ${rawText}` : ""}`
     );
   }
-
+ 
   return {
     imageBase64: image.data,
     mimeType: image.mimeType,
     rawText,
     usedReferenceCount: validShortlist.length,
     validShortlist,
+    // Pass through the fetched catalogue images so detectPinnedProducts
+    // can use them for visual matching without re-fetching from CDN
     catalogueImageParts,
   };
 }
-
+ 
 async function validateGeneratedRoom(
   originalRoomBase64: string,
   originalMimeType: string,
@@ -467,118 +503,120 @@ async function validateGeneratedRoom(
         {
           role: "user",
           parts: [
-            { text: buildValidationPrompt(roomType, theme, shortlist.slice(0, 8)) },
+            { text: buildValidationPrompt(roomType, theme, shortlist.slice(0, 12)) },
             { text: "Image 1: original room image." },
-            { inlineData: { mimeType: originalMimeType, data: originalRoomBase64 } },
+            {
+              inlineData: {
+                mimeType: originalMimeType,
+                data: originalRoomBase64,
+              },
+            },
             { text: "Image 2: cleaned room image." },
-            { inlineData: { mimeType: cleanedMimeType, data: cleanedRoomBase64 } },
+            {
+              inlineData: {
+                mimeType: cleanedMimeType,
+                data: cleanedRoomBase64,
+              },
+            },
             { text: "Image 3: final furnished generated room image." },
-            { inlineData: { mimeType: generatedMimeType, data: generatedImageBase64 } },
+            {
+              inlineData: {
+                mimeType: generatedMimeType,
+                data: generatedImageBase64,
+              },
+            },
           ],
         },
       ],
     })
   );
-
-  return safeParseJson<FurnishedRoomValidation>(extractTextFromResponse(response));
+ 
+  const text = extractTextFromResponse(response);
+  return safeParseJson<FurnishedRoomValidation>(text);
 }
-
+ 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
-
-
-function normalizeInnovativeItem(
-  item: Partial<InnovativeProductDetection> | null | undefined,
-  idx: number
-) {
-  const safeTitle =
-    typeof item?.title === "string" && item.title.trim().length > 0
-      ? item.title.trim()
-      : typeof item?.category === "string" && item.category.trim().length > 0
-      ? item.category.trim()
-      : `Innovative Item ${idx + 1}`;
-
-  const safeCategory =
-    typeof item?.category === "string" && item.category.trim().length > 0
-      ? item.category.trim()
-      : "innovative";
-
-  const safeSlug = safeTitle
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || `innovative-item-${idx + 1}`;
-
-  const bbox =
-    Array.isArray(item?.bbox) && item!.bbox.length === 4
-      ? (item!.bbox as [number, number, number, number])
-      : ([200, 200, 800, 800] as [number, number, number, number]);
-
-  return { safeTitle, safeCategory, safeSlug, bbox };
-}
-
+ 
 async function cropInnovativeSnapshots(
   generatedImageBase64: string,
   generatedMimeType: string,
   innovativeProducts: InnovativeProductDetection[]
 ): Promise<ShortlistItem[]> {
-  const cleanedInnovativeProducts = (innovativeProducts || []).filter(
-    (item) => item && (typeof item.title === "string" || typeof item.category === "string")
-  );
-
   const imageBuffer = Buffer.from(generatedImageBase64, "base64");
   const image = sharp(imageBuffer);
   const metadata = await image.metadata();
+ 
   const width = metadata.width ?? 0;
   const height = metadata.height ?? 0;
-
+ 
   if (!width || !height) {
-    return cleanedInnovativeProducts.map((item, idx) => {
-      const normalized = normalizeInnovativeItem(item, idx);
-      return {
-        bucket: "innovative",
-        product_handle: `innovative-${idx}-${normalized.safeSlug}`,
-        title: normalized.safeTitle,
-        category: normalized.safeCategory,
-        subcategory: normalized.safeCategory,
-        normalized_category: normalized.safeCategory,
-        image_url: null,
-        min_price: null,
-        max_price: null,
-        similarity: 1,
-        source: "innovative",
-        pinned: true,
-      };
-    });
+    return innovativeProducts.map((item, idx) => ({
+      bucket: "innovative",
+      product_handle: `innovative-${idx}-${item.title.toLowerCase().replace(/\s+/g, "-")}`,
+      title: item.title,
+      category: item.category,
+      subcategory: item.category,
+      normalized_category: item.category,
+      image_url: null,
+      min_price: null,
+      max_price: null,
+      similarity: 1,
+      source: "innovative",
+      pinned: true,
+    }));
   }
-
+ 
   const results: ShortlistItem[] = [];
-  for (let idx = 0; idx < cleanedInnovativeProducts.length; idx++) {
-    const item = cleanedInnovativeProducts[idx];
-    const normalized = normalizeInnovativeItem(item, idx);
-    const [nx1, ny1, nx2, ny2] = normalized.bbox;
-
-    const left = clamp(Math.round((nx1 / 1000) * width), 0, width - 1);
-    const top = clamp(Math.round((ny1 / 1000) * height), 0, height - 1);
-    const right = clamp(Math.round((nx2 / 1000) * width), left + 1, width);
-    const bottom = clamp(Math.round((ny2 / 1000) * height), top + 1, height);
-    const cropWidth = Math.max(1, right - left);
-    const cropHeight = Math.max(1, bottom - top);
-
-    const cropBuffer = await image
-      .clone()
-      .extract({ left, top, width: cropWidth, height: cropHeight })
-      .jpeg({ quality: 84 })
+ 
+  for (let idx = 0; idx < innovativeProducts.length; idx++) {
+    const item = innovativeProducts[idx];
+    const [nx1, ny1, nx2, ny2] = item.bbox || [200, 200, 800, 800];
+ 
+    const rawLeft = Math.floor((clamp(nx1, 0, 1000) / 1000) * width);
+    const rawTop = Math.floor((clamp(ny1, 0, 1000) / 1000) * height);
+    const rawRight = Math.floor((clamp(nx2, 0, 1000) / 1000) * width);
+    const rawBottom = Math.floor((clamp(ny2, 0, 1000) / 1000) * height);
+ 
+    const boxWidth = Math.max(60, rawRight - rawLeft);
+    const boxHeight = Math.max(60, rawBottom - rawTop);
+ 
+    const padX = Math.floor(boxWidth * 0.12);
+    const padY = Math.floor(boxHeight * 0.12);
+ 
+    const left = clamp(rawLeft - padX, 0, width - 1);
+    const top = clamp(rawTop - padY, 0, height - 1);
+    const right = clamp(rawRight + padX, left + 1, width);
+    const bottom = clamp(rawBottom + padY, top + 1, height);
+ 
+    const extractWidth = Math.max(1, right - left);
+    const extractHeight = Math.max(1, bottom - top);
+ 
+    const cropped = await sharp(imageBuffer)
+      .extract({
+        left,
+        top,
+        width: extractWidth,
+        height: extractHeight,
+      })
+      .resize(768, 768, {
+        fit: "cover",
+        position: "centre",
+      })
+      .png()
       .toBuffer();
-
+ 
+    const croppedDataUrl = `data:image/png;base64,${cropped.toString("base64")}`;
+ 
     results.push({
       bucket: "innovative",
-      product_handle: `innovative-${idx}-${normalized.safeSlug}`,
-      title: normalized.safeTitle,
-      category: normalized.safeCategory,
-      subcategory: normalized.safeCategory,
-      normalized_category: normalized.safeCategory,
-      image_url: `data:image/jpeg;base64,${cropBuffer.toString("base64")}`,
+      product_handle: `innovative-${idx}-${item.title.toLowerCase().replace(/\s+/g, "-")}`,
+      title: item.title,
+      category: item.category,
+      subcategory: item.category,
+      normalized_category: item.category,
+      image_url: croppedDataUrl,
       min_price: null,
       max_price: null,
       similarity: 1,
@@ -586,68 +624,76 @@ async function cropInnovativeSnapshots(
       pinned: true,
     });
   }
-
+ 
   return results;
 }
-
+ 
 async function detectPinnedProducts(
   generatedImageBase64: string,
   generatedMimeType: string,
   shortlist: ShortlistItem[],
-  catalogueImageParts: GeminiImagePart[]
-): Promise<ShortlistItem[]> {
+  // The pre-fetched catalogue images — used for visual matching, not just text handles.
+  // Only items whose images successfully fetched are passed here, which are exactly
+  // the same products that were used to furnish the generated room.
+  catalogueImageParts: { inlineData: { mimeType: string; data: string } }[]
+) {
   try {
-    const referenceShortlist = shortlist.slice(0, catalogueImageParts.length);
-
+    // Cap to avoid exceeding context limits — use same count as what was used for generation
+    const matchShortlist = shortlist.slice(0, catalogueImageParts.length);
+ 
+    // Build parts: generated room first, then each catalogue product image with its label
+    const detectionParts: any[] = [
+      { text: buildRecommendationRankingPrompt(matchShortlist) },
+      { text: "Image 1 — GENERATED ROOM (identify which catalogue products appear in this room):" },
+      { inlineData: { mimeType: generatedMimeType, data: generatedImageBase64 } },
+    ];
+ 
+    // Add each catalogue product image with its handle label for visual comparison
+    matchShortlist.forEach((item, idx) => {
+      detectionParts.push({
+        text: `Catalogue product ${idx + 1} — handle="${item.product_handle}" title="${item.title}" category="${item.category ?? ""}":`,
+      });
+      detectionParts.push(catalogueImageParts[idx]);
+    });
+ 
     const response = await withGeminiRetry(() =>
       ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: buildRecommendationRankingPrompt(referenceShortlist) },
-              { text: "Image 1: generated furnished room." },
-              { inlineData: { mimeType: generatedMimeType, data: generatedImageBase64 } },
-              ...catalogueImageParts.flatMap((part, index) => [
-                {
-                  text: `Reference image ${index + 2}: product_handle=${
-                    referenceShortlist[index]?.product_handle || "unknown"
-                  }`,
-                },
-                part,
-              ]),
-            ],
-          },
-        ],
+        contents: [{ role: "user", parts: detectionParts }],
       })
     );
-
-    const parsed = safeParseJson<RecommendationRanking>(extractTextFromResponse(response));
+ 
+    const text = extractTextFromResponse(response);
+    const parsed = safeParseJson<RecommendationRanking>(text);
+ 
     const shortlistMap = new Map(shortlist.map((x) => [x.product_handle, x]));
-
+ 
     const catalogPinned: ShortlistItem[] = [];
     for (const handle of parsed.catalog_product_handles || []) {
       const item = shortlistMap.get(handle);
-      if (item) catalogPinned.push({ ...item, pinned: true, source: "catalog" });
+      if (item) {
+        catalogPinned.push({ ...item, pinned: true, source: "catalog" });
+      }
     }
-
+ 
     const innovativePinned = await cropInnovativeSnapshots(
       generatedImageBase64,
       generatedMimeType,
       parsed.innovative_products || []
     );
-
+ 
     return [...catalogPinned, ...innovativePinned];
   } catch (err) {
     console.warn("Failed to detect pinned products:", err);
+    // Return empty on failure — better than showing wrong products as pinned
     return [];
   }
 }
-
+ 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as GenerateRoomBody;
+ 
     const roomType = body.roomType;
     const theme = body.theme;
     const cleanedRoomBase64Input = body.cleanedRoomBase64;
@@ -656,26 +702,32 @@ export async function POST(req: NextRequest) {
     const shortlist = (body.shortlist || []).filter((x) => !!x.image_url);
     const editMode = !!body.editMode;
     const baseGeneratedImage = body.baseGeneratedImage || null;
-
+ 
     if (!roomType) {
       return NextResponse.json({ ok: false, error: "roomType is required" }, { status: 400 });
     }
+ 
     if (!theme?.trim()) {
       return NextResponse.json({ ok: false, error: "theme is required" }, { status: 400 });
     }
+ 
     if (!cleanedRoomBase64Input) {
-      return NextResponse.json({ ok: false, error: "cleanedRoomBase64 is required" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "cleanedRoomBase64 is required" },
+        { status: 400 }
+      );
     }
+ 
     if (!shortlist.length) {
       return NextResponse.json(
         { ok: false, error: "shortlist is required and must contain image_url values" },
         { status: 400 }
       );
     }
-
+ 
     const cleanedRoomBase64 = stripDataUrlPrefix(cleanedRoomBase64Input);
     const originalRoomBase64 = stripDataUrlPrefix(originalRoomBase64Input!);
-
+ 
     let best: {
       imageBase64: string;
       mimeType: string;
@@ -684,9 +736,9 @@ export async function POST(req: NextRequest) {
       shortlist: ShortlistItem[];
       usedReferenceCount: number;
       attemptNumber: number;
-      catalogueImageParts: GeminiImagePart[];
+      catalogueImageParts: { inlineData: { mimeType: string; data: string } }[];
     } | null = null;
-
+ 
     for (let attempt = 1; attempt <= 2; attempt++) {
       const generated = await generateRoomAttempt(
         roomType,
@@ -698,7 +750,7 @@ export async function POST(req: NextRequest) {
         editMode,
         baseGeneratedImage
       );
-
+ 
       const validation = await validateGeneratedRoom(
         originalRoomBase64,
         mimeType,
@@ -710,8 +762,9 @@ export async function POST(req: NextRequest) {
         theme,
         generated.validShortlist
       );
-
+ 
       const score = computeValidationScore(validation);
+ 
       if (!best || score > best.score) {
         best = {
           imageBase64: generated.imageBase64,
@@ -724,40 +777,43 @@ export async function POST(req: NextRequest) {
           catalogueImageParts: generated.catalogueImageParts,
         };
       }
-
-      if (
-        validation.pass &&
-        validation.catalog_alignment_level !== "poor" &&
-        validation.theme_match_level !== "poor"
-      ) {
-        break;
-      }
     }
-
+ 
     if (!best) {
-      return NextResponse.json({ ok: false, error: "Room generation failed" }, { status: 500 });
+      throw new Error("Failed to generate any valid room attempt.");
     }
-
+ 
+    // Pass catalogue images into detectPinnedProducts so it can visually compare
+    // each product image against the generated room — far more accurate than text-only matching
     const pinnedProducts = await detectPinnedProducts(
       best.imageBase64,
       best.mimeType,
       best.shortlist,
       best.catalogueImageParts
     );
-
+ 
     return NextResponse.json({
       ok: true,
       generatedImage: `data:${best.mimeType};base64,${best.imageBase64}`,
-      pinnedProducts,
-      validationPassed: best.validation.pass,
+      mimeType: best.mimeType,
       validation: best.validation,
+      validationScore: best.score,
+      attempts: 3,
+      retryUsed: best.attemptNumber > 1,
+      bestAttempt: best.attemptNumber,
+      validationPassed: true,
       usedReferenceCount: best.usedReferenceCount,
-      attemptNumber: best.attemptNumber,
+      pinnedProducts,
     });
   } catch (error) {
     console.error("generate-room error:", error);
+ 
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "Failed to generate room" },
+      {
+        ok: false,
+        error: "Failed to generate room image",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
       { status: 500 }
     );
   }

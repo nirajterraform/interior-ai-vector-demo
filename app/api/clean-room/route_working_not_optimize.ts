@@ -286,18 +286,6 @@ function pickBestAttempt(a: AttemptResult, b: AttemptResult): AttemptResult {
   return b.score > a.score ? b : a;
 }
 
-function shouldRetryCleanAttempt(validation: CleanRoomValidation): boolean {
-  if (!validation.geometry_preserved) return true;
-  if (!validation.wall_preserved) return true;
-  if (!validation.windows_preserved) return true;
-  if (!validation.floor_preserved) return true;
-  if (validation.remaining_furniture_level === "significant") return true;
-  if (validation.artifacts_level === "significant") return true;
-  if (validation.structural_drift_level === "significant") return true;
-  if (validation.empty_room_quality === "poor") return true;
-  return false;
-}
-
 async function generateCleanRoomAttempt(
   roomImageBase64: string,
   mimeType: string,
@@ -429,7 +417,16 @@ export async function POST(req: NextRequest) {
 
     const attempt1 = await runAttempt(originalImageBase64, mimeType, false, 1);
 
-    if (!shouldRetryCleanAttempt(attempt1.validation)) {
+    if (
+      attempt1.validation.geometry_preserved &&
+      attempt1.validation.wall_preserved &&
+      attempt1.validation.windows_preserved &&
+      attempt1.validation.floor_preserved &&
+      attempt1.validation.remaining_furniture_level !== "significant" &&
+      attempt1.validation.artifacts_level !== "significant" &&
+      attempt1.validation.structural_drift_level !== "significant" &&
+      attempt1.validation.empty_room_quality !== "poor"
+    ) {
       return NextResponse.json({
         ok: true,
         cleanedImage: `data:${attempt1.mimeType};base64,${attempt1.imageBase64}`,
@@ -444,6 +441,7 @@ export async function POST(req: NextRequest) {
     }
 
     const attempt2 = await runAttempt(originalImageBase64, mimeType, true, 2);
+
     const best = pickBestAttempt(attempt1, attempt2);
 
     return NextResponse.json({

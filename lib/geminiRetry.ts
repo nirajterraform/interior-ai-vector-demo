@@ -1,69 +1,96 @@
-type RetryOptions = {
+type GeminiRetryOptions = {
   maxRetries?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
 };
 
-function sleep(ms: number) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+function isRetryableGeminiError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const e = error as {
+    status?: number;
+    code?: number;
+    message?: string;
+    error?: {
+      code?: number;
+      message?: string;
+      status?: string;
+    };
+  };
+
+  const topLevelMessage = (e.message || "").toLowerCase();
+  const nestedMessage = (e.error?.message || "").toLowerCase();
+  const combinedMessage = `${topLevelMessage} ${nestedMessage}`;
+
+  const statusCode = e.status ?? e.code ?? e.error?.code;
+
+  if (statusCode === 429) return true;
+
+  if (
+    combinedMessage.includes("429") ||
+    combinedMessage.includes("quota") ||
+    combinedMessage.includes("rate limit") ||
+    combinedMessage.includes("resource exhausted") ||
+    combinedMessage.includes("too many requests")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
-function isRetryableGeminiError(error: unknown): boolean {
-  const message = getErrorMessage(error).toLowerCase();
+function computeDelay(
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs: number
+): number {
+  const exponentialDelay = baseDelayMs * Math.pow(2, attempt - 1);
+  const cappedDelay = Math.min(exponentialDelay, maxDelayMs);
 
-  return (
-    message.includes("429") ||
-    message.includes("quota") ||
-    message.includes("rate limit") ||
-    message.includes("rate_limit") ||
-    message.includes("resource exhausted") ||
-    message.includes("too many requests") ||
-    message.includes("exceeded") && message.includes("quota")
-  );
+  // small jitter to avoid retry bursts
+  const jitter = Math.floor(Math.random() * 150);
+
+  return cappedDelay + jitter;
 }
 
 export async function withGeminiRetry<T>(
   fn: () => Promise<T>,
-  options: RetryOptions = {}
+  options: GeminiRetryOptions = {}
 ): Promise<T> {
-  const maxRetries = options.maxRetries ?? 8;
-  const baseDelayMs = options.baseDelayMs ?? 1200;
-  const maxDelayMs = options.maxDelayMs ?? 15000;
+  const {
+    maxRetries = 3,
+    baseDelayMs = 400,
+    maxDelayMs = 1200,
+  } = options;
 
   let lastError: unknown;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     try {
       return await fn();
     } catch (error) {
       lastError = error;
 
-      if (!isRetryableGeminiError(error)) {
+      const retryable = isRetryableGeminiError(error);
+      const hasMoreAttempts = attempt <= maxRetries;
+
+      if (!retryable || !hasMoreAttempts) {
         throw error;
       }
 
-      if (attempt === maxRetries) {
-        throw error;
-      }
-
-      const exponential = baseDelayMs * Math.pow(2, attempt);
-      const jitter = Math.floor(Math.random() * 500);
-      const delay = Math.min(exponential + jitter, maxDelayMs);
+      const delay = computeDelay(attempt, baseDelayMs, maxDelayMs);
 
       console.warn(
-        `Gemini retryable error detected. attempt=${attempt + 1}/${maxRetries + 1}, waiting ${delay}ms`
+        `Gemini retryable error detected. attempt=${attempt}/${maxRetries}, waiting ${delay}ms`
       );
 
       await sleep(delay);
     }
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Unknown Gemini retry failure");
+  throw lastError;
 }
