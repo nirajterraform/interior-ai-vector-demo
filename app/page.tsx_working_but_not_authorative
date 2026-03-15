@@ -24,35 +24,17 @@ type RetrievedProduct = {
   source?: "catalog" | "innovative";
 };
 
-type AuthoritativeSelectionItem = RetrievedProduct & {
-  slot: string;
-  requestedCategory: string;
-  confidence?: number;
-};
-
-type ParsedIntent = {
-  roomType: string;
-  requestedCategories: string[];
-  styleKeywords: string[];
-  avoidCategories: string[];
-  allowKids: boolean;
-  normalizedTheme: string;
-};
-
 type RetrievalResponse = {
   roomType: RoomType;
   theme: string;
   shortlist: RetrievedProduct[];
   nextRotationCursor: number;
-  authoritativeSelection?: AuthoritativeSelectionItem[];
-  parsedIntent?: ParsedIntent;
 };
 
 type GenerateRoomResponse = {
   ok: true;
   generatedImage: string;
   pinnedProducts?: RetrievedProduct[];
-  selectedProducts?: AuthoritativeSelectionItem[];
   validationPassed?: boolean;
 };
 
@@ -105,14 +87,6 @@ async function resizeImageToDataUrl(
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
-}
-
-function hasRenderableImage(product: RetrievedProduct | AuthoritativeSelectionItem | null | undefined): boolean {
-  return !!(
-    product &&
-    typeof product.image_url === "string" &&
-    product.image_url.trim().length > 0
-  );
 }
 
 function dedupeProducts(items: RetrievedProduct[]): RetrievedProduct[] {
@@ -249,23 +223,14 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
 
   const visiblePinnedProducts = useMemo(
-    () => pinnedProducts.filter((p) => hasRenderableImage(p) && !brokenImageHandles.includes(p.product_handle)),
+    () => pinnedProducts.filter((p) => !brokenImageHandles.includes(p.product_handle)),
     [pinnedProducts, brokenImageHandles]
-  );
-
-  const selectedCatalogueProducts = useMemo(
-    () =>
-      dedupeProducts(
-        ((retrievalResult?.authoritativeSelection || []) as RetrievedProduct[]).filter((p) => hasRenderableImage(p))
-      ),
-    [retrievalResult]
   );
 
   const visibleDisplayedProducts = useMemo(
     () =>
       displayedProducts.filter(
         (p) =>
-          hasRenderableImage(p) &&
           !brokenImageHandles.includes(p.product_handle) &&
           !visiblePinnedProducts.some((pp) => pp.product_handle === p.product_handle)
       ),
@@ -363,7 +328,6 @@ export default function Page() {
     originalRoomBase64: string;
     cleanedRoomBase64: string;
     shortlist: RetrievedProduct[];
-    authoritativeSelection?: AuthoritativeSelectionItem[];
     editMode?: boolean;
     baseGeneratedImage?: string | null;
   }) {
@@ -379,7 +343,6 @@ export default function Page() {
         cleanedRoomBase64: params.cleanedRoomBase64,
         mimeType,
         shortlist: params.shortlist,
-        authoritativeSelection: params.authoritativeSelection ?? [],
         editMode: params.editMode ?? false,
         baseGeneratedImage: params.baseGeneratedImage ?? null,
       }),
@@ -521,15 +484,11 @@ export default function Page() {
         originalRoomBase64: uploadedRoomImage,
         cleanedRoomBase64: effectiveCleanedImage,
         shortlist: effectiveRetrieval.shortlist,
-        authoritativeSelection: effectiveRetrieval.authoritativeSelection || [],
         editMode: !!generatedRoomImage,
         baseGeneratedImage: generatedRoomImage,
       });
 
       setGeneratedRoomImage(generateData.generatedImage);
-      if (generateData.selectedProducts?.length) {
-        setRetrievalResult((prev) => prev ? { ...prev, authoritativeSelection: generateData.selectedProducts } : prev);
-      }
       if (generateData.pinnedProducts?.length) {
         setPinnedProducts(
           dedupeProducts(

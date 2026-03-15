@@ -14,21 +14,6 @@ type RetrievedProduct = {
   similarity?: number;
 };
 
-type ParsedIntent = {
-  roomType: string;
-  requestedCategories: string[];
-  styleKeywords: string[];
-  avoidCategories: string[];
-  allowKids: boolean;
-  normalizedTheme: string;
-};
-
-type AuthoritativeSelectionItem = RetrievedProduct & {
-  slot: string;
-  requestedCategory: string;
-  confidence: number;
-};
-
 const CATEGORY_ALIASES: Record<string, string[]> = {
   sofa: ["sofa", "couch", "sectional", "settee", "loveseat", "chesterfield"],
   chair: ["chair", "armchair", "accent chair", "lounge chair", "recliner", "easy chair"],
@@ -51,46 +36,6 @@ const ROOM_TYPE_HINTS: Record<string, string[]> = {
   kitchen: ["stool", "table", "lamp", "cabinet", "decor"],
   office: ["desk", "chair", "lamp", "cabinet", "rug", "decor"],
 };
-
-const SLOT_PLANS: Record<string, Array<{ slot: string; category: string }>> = {
-  living_room: [
-    { slot: "main_seating", category: "sofa" },
-    { slot: "accent_seating", category: "chair" },
-    { slot: "table", category: "table" },
-    { slot: "rug", category: "rug" },
-    { slot: "lamp", category: "lamp" },
-    { slot: "storage", category: "cabinet" },
-  ],
-  bedroom: [
-    { slot: "bed", category: "bed" },
-    { slot: "bedside", category: "table" },
-    { slot: "lamp", category: "lamp" },
-    { slot: "storage", category: "cabinet" },
-    { slot: "mirror", category: "mirror" },
-    { slot: "rug", category: "rug" },
-  ],
-  dining_room: [
-    { slot: "dining_table", category: "dining" },
-    { slot: "dining_seating", category: "chair" },
-    { slot: "lamp", category: "lamp" },
-    { slot: "storage", category: "cabinet" },
-    { slot: "rug", category: "rug" },
-  ],
-  kitchen: [
-    { slot: "stool", category: "stool" },
-    { slot: "table", category: "table" },
-    { slot: "lamp", category: "lamp" },
-    { slot: "storage", category: "cabinet" },
-  ],
-  office: [
-    { slot: "desk", category: "desk" },
-    { slot: "chair", category: "chair" },
-    { slot: "lamp", category: "lamp" },
-    { slot: "storage", category: "cabinet" },
-    { slot: "rug", category: "rug" },
-  ],
-};
-
 
 function escapeRegExp(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -143,10 +88,6 @@ function shouldAllowKids(theme: string, roomType: string) {
   return /\bkid|kids|children|child|nursery|toddler\b/i.test(theme);
 }
 
-function hasUsableImage(product: RetrievedProduct | null | undefined): boolean {
-  return !!(product && typeof product.image_url === "string" && product.image_url.trim().length > 0);
-}
-
 function itemSearchText(item: RetrievedProduct) {
   return normalizeWhitespace(
     [
@@ -197,7 +138,6 @@ function filterAndPrioritize(
   maxItems: number
 ) {
   const scored = items
-    .filter((item) => hasUsableImage(item))
     .map((item) => ({
       item,
       text: itemSearchText(item),
@@ -234,105 +174,6 @@ function filterAndPrioritize(
   return result;
 }
 
-function extractStyleKeywords(theme: string, requestedCategories: string[]) {
-  const stopwords = new Set([
-    "please", "put", "add", "room", "make", "with", "and", "the", "a", "an", "to", "in", "for",
-    "more", "less", "very", "some", "this", "that", "my", "your", "use", "show", "need", "want",
-  ]);
-
-  return normalizeTheme(theme)
-    .split(/\s+/)
-    .filter((word) => word.length > 2)
-    .filter((word) => !stopwords.has(word))
-    .filter((word) => !requestedCategories.includes(word))
-    .slice(0, 8);
-}
-
-function parseIntent(theme: string, roomType: string): ParsedIntent {
-  const normalizedTheme = normalizeTheme(theme);
-  const requestedCategories = extractRequestedCategories(theme, roomType);
-  const allowKids = shouldAllowKids(theme, roomType);
-  const avoidCategories = allowKids ? [] : ["kids", "nursery", "toddler", "children"];
-  const styleKeywords = extractStyleKeywords(theme, requestedCategories);
-
-  return {
-    roomType,
-    requestedCategories,
-    styleKeywords,
-    avoidCategories,
-    allowKids,
-    normalizedTheme,
-  };
-}
-
-function confidenceFromScore(score: number) {
-  return Math.max(0.35, Math.min(0.99, 0.55 + score / 10));
-}
-
-function buildAuthoritativeSelection(
-  items: RetrievedProduct[],
-  intent: ParsedIntent,
-  maxItems = 6
-): AuthoritativeSelectionItem[] {
-  const slotPlan = SLOT_PLANS[intent.roomType] || [];
-  const requested = intent.requestedCategories.length
-    ? intent.requestedCategories
-    : (ROOM_TYPE_HINTS[intent.roomType] || []).slice(0, 4);
-
-  const plannedSlots = [
-    ...requested.map((category, idx) => ({
-      slot: idx === 0 ? "primary" : `requested_${idx + 1}` ,
-      category,
-    })),
-    ...slotPlan,
-  ];
-
-  const scored = items
-    .filter((item) => hasUsableImage(item))
-    .map((item) => ({ item, text: itemSearchText(item), score: scoreProduct(item, intent.requestedCategories, intent.normalizedTheme, intent.roomType) }))
-    .sort((a, b) => b.score - a.score);
-
-  const usedHandles = new Set<string>();
-  const selection: AuthoritativeSelectionItem[] = [];
-
-  for (const slot of plannedSlots) {
-    const match = scored.find(({ item, text }) => {
-      if (!item.product_handle || usedHandles.has(item.product_handle)) return false;
-      const categoryMatch = text.includes(slot.category);
-      if (!categoryMatch) return false;
-      if (!intent.allowKids && /\bkid|kids|nursery|toddler|children\b/.test(text)) return false;
-      return true;
-    });
-
-    if (!match) continue;
-    usedHandles.add(match.item.product_handle);
-    selection.push({
-      ...match.item,
-      slot: slot.slot,
-      requestedCategory: slot.category,
-      confidence: confidenceFromScore(match.score),
-    });
-
-    if (selection.length >= maxItems) break;
-  }
-
-  if (!selection.length) {
-    for (const entry of scored.slice(0, maxItems)) {
-      if (!entry.item.product_handle || usedHandles.has(entry.item.product_handle)) continue;
-      usedHandles.add(entry.item.product_handle);
-      selection.push({
-        ...entry.item,
-        slot: `fallback_${selection.length + 1}`,
-        requestedCategory: intent.requestedCategories[0] || intent.roomType,
-        confidence: confidenceFromScore(entry.score),
-      });
-      if (selection.length >= maxItems) break;
-    }
-  }
-
-  return selection;
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -351,10 +192,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "theme is required" }, { status: 400 });
     }
 
-    const intent = parseIntent(theme, roomType);
+    const normalizedTheme = normalizeTheme(theme);
+    const requestedCategories = extractRequestedCategories(theme, roomType);
 
     const expandedQuery = normalizeWhitespace(
-      [intent.normalizedTheme, ...intent.requestedCategories, ...intent.styleKeywords].join(" ")
+      [normalizedTheme, ...requestedCategories].join(" ")
     );
 
     const result = await retrieveCatalogue({
@@ -367,23 +209,18 @@ export async function POST(req: NextRequest) {
 
     const shortlist = filterAndPrioritize(
       result.shortlist || [],
-      intent.requestedCategories,
+      requestedCategories,
       theme,
       roomType,
       pageSize
     );
 
-    const safeShortlist = shortlist.filter((item) => hasUsableImage(item));
-    const authoritativeSelection = buildAuthoritativeSelection(safeShortlist, intent, Math.min(6, pageSize)).filter((item) => hasUsableImage(item));
-
     return NextResponse.json({
       ...result,
       theme,
-      normalizedTheme: intent.normalizedTheme,
-      requestedCategories: intent.requestedCategories,
-      parsedIntent: intent,
-      authoritativeSelection,
-      shortlist: safeShortlist,
+      normalizedTheme,
+      requestedCategories,
+      shortlist,
     });
   } catch (error) {
     console.error("retrieve-catalogue error:", error);

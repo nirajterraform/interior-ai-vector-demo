@@ -1,4 +1,3 @@
-
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI, Modality } from "@google/genai";
 import sharp from "sharp";
@@ -25,21 +24,6 @@ type ShortlistItem = {
   source?: "catalog" | "innovative";
 };
 
-type AuthoritativeSelectionItem = ShortlistItem & {
-  slot: string;
-  requestedCategory: string;
-  confidence?: number;
-};
-
-type ParsedIntent = {
-  roomType: string;
-  requestedCategories: string[];
-  styleKeywords: string[];
-  avoidCategories: string[];
-  allowKids: boolean;
-  normalizedTheme: string;
-};
-
 type GenerateRoomBody = {
   roomType?: string;
   theme?: string;
@@ -47,8 +31,6 @@ type GenerateRoomBody = {
   originalRoomBase64?: string;
   mimeType?: string;
   shortlist?: ShortlistItem[];
-  authoritativeSelection?: AuthoritativeSelectionItem[];
-  parsedIntent?: ParsedIntent | null;
   editMode?: boolean;
   baseGeneratedImage?: string | null;
 };
@@ -92,44 +74,6 @@ type GeminiImagePart = {
   };
 };
 
-const SHOPIFY_IMAGE_CACHE_TTL_MS = 1000 * 60 * 15; // 15 minutes
-const SHOPIFY_IMAGE_CACHE_MAX = 250;
-const MAX_GENERATION_REFERENCE_IMAGES = 8;
-const MAX_PINNED_DETECTION_REFERENCE_IMAGES = 8;
-
-const shopifyImageCache = new Map<
-  string,
-  {
-    part: GeminiImagePart;
-    expiresAt: number;
-    lastAccessedAt: number;
-  }
->();
-
-function evictExpiredShopifyImageEntries(now: number) {
-  for (const [key, value] of shopifyImageCache.entries()) {
-    if (value.expiresAt <= now) {
-      shopifyImageCache.delete(key);
-    }
-  }
-}
-
-function evictLeastRecentlyUsedShopifyImageEntry() {
-  let oldestKey: string | null = null;
-  let oldestAccess = Number.POSITIVE_INFINITY;
-
-  for (const [key, value] of shopifyImageCache.entries()) {
-    if (value.lastAccessedAt < oldestAccess) {
-      oldestAccess = value.lastAccessedAt;
-      oldestKey = key;
-    }
-  }
-
-  if (oldestKey) {
-    shopifyImageCache.delete(oldestKey);
-  }
-}
-
 function stripDataUrlPrefix(input: string): string {
   const idx = input.indexOf(",");
   return idx >= 0 ? input.slice(idx + 1) : input;
@@ -172,19 +116,10 @@ function safeParseJson<T>(text: string): T {
 
 async function urlToInlineData(url: string): Promise<GeminiImagePart> {
   const normalizedUrl = decodeURI(url.trim());
-  const now = Date.now();
-  evictExpiredShopifyImageEntries(now);
-
-  const cached = shopifyImageCache.get(normalizedUrl);
-  if (cached && cached.expiresAt > now) {
-    cached.lastAccessedAt = now;
-    return cached.part;
-  }
-
   const res = await fetch(normalizedUrl, {
     method: "GET",
     redirect: "follow",
-    cache: "force-cache",
+    cache: "no-store",
     headers: {
       "User-Agent": "Mozilla/5.0",
       Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -199,61 +134,16 @@ async function urlToInlineData(url: string): Promise<GeminiImagePart> {
   const arrayBuffer = await res.arrayBuffer();
   const optimized = await sharp(Buffer.from(arrayBuffer))
     .rotate()
-    .resize({ width: 640, height: 640, fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 78, mozjpeg: true })
+    .resize({ width: 768, height: 768, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 82, mozjpeg: true })
     .toBuffer();
 
-  const part: GeminiImagePart = {
+  return {
     inlineData: {
       mimeType: "image/jpeg",
       data: optimized.toString("base64"),
     },
   };
-
-  shopifyImageCache.set(normalizedUrl, {
-    part,
-    expiresAt: now + SHOPIFY_IMAGE_CACHE_TTL_MS,
-    lastAccessedAt: now,
-  });
-
-  if (shopifyImageCache.size > SHOPIFY_IMAGE_CACHE_MAX) {
-    evictLeastRecentlyUsedShopifyImageEntry();
-  }
-
-  return part;
-}
-
-function authoritativeSelectionSummary(selection: AuthoritativeSelectionItem[]) {
-  return selection
-    .map((item, idx) => {
-      const parts = [
-        `${idx + 1}.`,
-        `slot=${item.slot}`,
-        `requested_category=${item.requestedCategory}`,
-        `product_handle=${item.product_handle}`,
-        `title=${item.title}`,
-        item.category ? `category=${item.category}` : "",
-        item.normalized_category ? `normalized_category=${item.normalized_category}` : "",
-        typeof item.confidence === "number" ? `confidence=${item.confidence.toFixed(2)}` : "",
-      ].filter(Boolean);
-      return parts.join("; ");
-    })
-    .join("\n");
-}
-
-function ensureSelectionCoverage(
-  shortlist: ShortlistItem[],
-  authoritativeSelection: AuthoritativeSelectionItem[],
-  theme: string
-): AuthoritativeSelectionItem[] {
-  if (authoritativeSelection?.length) return authoritativeSelection;
-  const fallback = prioritizeShortlist(shortlist, theme, 6);
-  return fallback.map((item, idx) => ({
-    ...item,
-    slot: idx === 0 ? "primary" : `fallback_${idx + 1}`,
-    requestedCategory: item.normalized_category || item.category || item.bucket || "product",
-    confidence: 0.6,
-  }));
 }
 
 function shortlistSummary(shortlist: ShortlistItem[]): string {
@@ -339,7 +229,6 @@ function buildGeneratePrompt(
   roomType: string,
   theme: string,
   shortlist: ShortlistItem[],
-  authoritativeSelection: AuthoritativeSelectionItem[],
   attemptNumber: number,
   editMode: boolean
 ) {
@@ -361,19 +250,15 @@ Redesign this ${roomType.replaceAll("_", " ")} using the cleaned room image as t
 User design intent:
 ${theme}
 
-Authoritative selected catalogue products (source of truth):
-${authoritativeSelectionSummary(authoritativeSelection)}
-
-Supporting shortlist context:
+Catalogue references:
 ${shortlistSummary(shortlist)}
 
-Catalogue-authoritative generation policy:
-1. Treat the authoritative selected catalogue products as the source of truth for all shoppable products used in the image.
-2. Use only those selected catalogue products for requested furniture categories.
-3. Do not substitute, invent, replace, or introduce internet or generic products when an authoritative selected product exists.
-4. Resolve vocabulary semantically. For example, couch/sectional/loveseat/settee are seating requests and should map to the closest selected seating product.
-5. Never use kids or nursery furniture unless the user explicitly asks for kids, children, nursery, or toddler furniture.
-6. If an authoritative selected product cannot be placed naturally, omit it rather than replacing it with another item.
+Catalogue-aware generation policy:
+1. Treat the catalogue shortlist as the source of truth for shoppable products.
+2. If a matching catalogue product exists for a requested object, use that catalogue product family and do not invent an internet or generic substitute.
+3. Resolve vocabulary semantically. For example, couch/sectional/loveseat/settee are seating requests and should map to the closest seating item in the shortlist.
+4. Never use kids or nursery furniture unless the user explicitly asks for kids, children, nursery, or toddler furniture.
+5. If no suitable shortlist product exists for a requested object, omit that object instead of inventing a mismatched one.
 
 Strict room-preservation rules:
 6. Preserve the exact room geometry.
@@ -390,7 +275,7 @@ Return one final redesigned room image only.
 `.trim();
 }
 
-function buildValidationPrompt(roomType: string, theme: string, shortlist: ShortlistItem[], authoritativeSelection: AuthoritativeSelectionItem[]) {
+function buildValidationPrompt(roomType: string, theme: string, shortlist: ShortlistItem[]) {
   return `
 You are a strict furnished-room validator.
 
@@ -402,10 +287,7 @@ ${roomType}
 User design prompt:
 ${theme}
 
-Authoritative selected catalog products:
-${authoritativeSelectionSummary(authoritativeSelection)}
-
-Supporting shortlist:
+Shortlisted catalog products:
 ${shortlistSummary(shortlist)}
 
 Return strict JSON only:
@@ -438,11 +320,9 @@ You will be shown:
 - Images 2 onwards: catalogue product reference images, each labelled with its product_handle
 
 Tasks:
-1. Return catalog_product_handles only for catalogue products clearly visible in the generated room.
-2. Check every visible furniture/decor object against the full set of shown catalogue references before deciding it is not from the catalogue.
-3. Return innovative_products only for large visible objects that do not match any shown catalogue product.
-4. Be conservative. If uncertain between a shown catalogue reference and an innovative object, prefer the shown catalogue reference.
-5. Do not omit a shown catalogue product if it is visibly present in the generated room.
+1. Return catalog_product_handles only for products clearly visible in the generated room.
+2. Return innovative_products only for large objects visible in the room that do not match any shown catalogue product.
+3. Be conservative. If uncertain, do not mark it as pinned.
 
 Catalogue product handles:
 ${shortlistSummary(shortlist)}
@@ -482,24 +362,8 @@ function computeValidationScore(v: FurnishedRoomValidation): number {
   return score;
 }
 
-function isStrongEnoughToStop(v: FurnishedRoomValidation, score: number) {
-  return (
-    v.pass &&
-    v.room_type_correct &&
-    v.geometry_preserved &&
-    v.catalog_alignment_level !== "poor" &&
-    v.theme_match_level !== "poor" &&
-    v.hallucinated_objects_level !== "significant" &&
-    v.artifacts_level !== "significant" &&
-    score >= 28
-  );
-}
-
-async function buildReferenceParts(shortlist: ShortlistItem[], authoritativeSelection: AuthoritativeSelectionItem[], theme: string) {
-  const prioritizedSelection = authoritativeSelection?.length
-    ? authoritativeSelection
-    : ensureSelectionCoverage(shortlist, authoritativeSelection, theme);
-  const prioritized = prioritizeShortlist(prioritizedSelection, theme, MAX_GENERATION_REFERENCE_IMAGES);
+async function buildReferenceParts(shortlist: ShortlistItem[], theme: string) {
+  const prioritized = prioritizeShortlist(shortlist, theme, 8);
 
   const resolved = await Promise.all(
     prioritized.map(async (item) => {
@@ -530,19 +394,16 @@ async function generateRoomAttempt(
   cleanedRoomBase64: string,
   cleanedMimeType: string,
   shortlist: ShortlistItem[],
-  authoritativeSelection: AuthoritativeSelectionItem[],
   attemptNumber: number,
   editMode: boolean,
   baseGeneratedImage?: string | null
 ) {
-  const effectiveSelection = ensureSelectionCoverage(shortlist, authoritativeSelection, theme);
-  const { referenceParts, validShortlist, catalogueImageParts } = await buildReferenceParts(shortlist, effectiveSelection, theme);
+  const { referenceParts, validShortlist, catalogueImageParts } = await buildReferenceParts(shortlist, theme);
   if (!referenceParts.length) {
     throw new Error("None of the catalogue images could be fetched from Shopify CDN.");
   }
 
-  const selectedForPrompt = ensureSelectionCoverage(validShortlist, effectiveSelection, theme);
-  const prompt = buildGeneratePrompt(roomType, theme, validShortlist, selectedForPrompt, attemptNumber, editMode);
+  const prompt = buildGeneratePrompt(roomType, theme, validShortlist, attemptNumber, editMode);
   const parts: any[] = [{ text: prompt }, ...referenceParts];
 
   if (editMode && baseGeneratedImage) {
@@ -584,7 +445,6 @@ async function generateRoomAttempt(
     rawText,
     usedReferenceCount: validShortlist.length,
     validShortlist,
-    authoritativeSelection: selectedForPrompt,
     catalogueImageParts,
   };
 }
@@ -598,8 +458,7 @@ async function validateGeneratedRoom(
   generatedMimeType: string,
   roomType: string,
   theme: string,
-  shortlist: ShortlistItem[],
-  authoritativeSelection: AuthoritativeSelectionItem[]
+  shortlist: ShortlistItem[]
 ) {
   const response = await withGeminiRetry(() =>
     ai.models.generateContent({
@@ -608,7 +467,7 @@ async function validateGeneratedRoom(
         {
           role: "user",
           parts: [
-            { text: buildValidationPrompt(roomType, theme, shortlist.slice(0, 6), authoritativeSelection.slice(0, 4)) },
+            { text: buildValidationPrompt(roomType, theme, shortlist.slice(0, 8)) },
             { text: "Image 1: original room image." },
             { inlineData: { mimeType: originalMimeType, data: originalRoomBase64 } },
             { text: "Image 2: cleaned room image." },
@@ -627,6 +486,7 @@ async function validateGeneratedRoom(
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
+
 
 function normalizeInnovativeItem(
   item: Partial<InnovativeProductDetection> | null | undefined,
@@ -730,50 +590,14 @@ async function cropInnovativeSnapshots(
   return results;
 }
 
-function buildPinnedDetectionReferences(
-  shortlist: ShortlistItem[],
-  catalogueImageParts: GeminiImagePart[],
-  authoritativeSelection: AuthoritativeSelectionItem[]
-) {
-  const authoritativeHandles = new Set(
-    (authoritativeSelection || []).map((item) => item.product_handle).filter(Boolean)
-  );
-
-  const pairs = shortlist
-    .map((item, index) => ({
-      item,
-      part: catalogueImageParts[index],
-      priority: authoritativeHandles.has(item.product_handle) ? 1 : 0,
-      originalIndex: index,
-    }))
-    .filter((pair) => !!pair.item?.product_handle && !!pair.part);
-
-  pairs.sort((a, b) => {
-    if (b.priority !== a.priority) return b.priority - a.priority;
-    return a.originalIndex - b.originalIndex;
-  });
-
-  const limited = pairs.slice(0, MAX_PINNED_DETECTION_REFERENCE_IMAGES);
-
-  return {
-    referenceShortlist: limited.map((pair) => pair.item),
-    limitedCatalogueImageParts: limited.map((pair) => pair.part),
-  };
-}
-
 async function detectPinnedProducts(
   generatedImageBase64: string,
   generatedMimeType: string,
   shortlist: ShortlistItem[],
-  catalogueImageParts: GeminiImagePart[],
-  authoritativeSelection: AuthoritativeSelectionItem[]
+  catalogueImageParts: GeminiImagePart[]
 ): Promise<ShortlistItem[]> {
   try {
-    const { referenceShortlist, limitedCatalogueImageParts } = buildPinnedDetectionReferences(
-      shortlist,
-      catalogueImageParts,
-      authoritativeSelection
-    );
+    const referenceShortlist = shortlist.slice(0, catalogueImageParts.length);
 
     const response = await withGeminiRetry(() =>
       ai.models.generateContent({
@@ -785,7 +609,7 @@ async function detectPinnedProducts(
               { text: buildRecommendationRankingPrompt(referenceShortlist) },
               { text: "Image 1: generated furnished room." },
               { inlineData: { mimeType: generatedMimeType, data: generatedImageBase64 } },
-              ...limitedCatalogueImageParts.flatMap((part, index) => [
+              ...catalogueImageParts.flatMap((part, index) => [
                 {
                   text: `Reference image ${index + 2}: product_handle=${
                     referenceShortlist[index]?.product_handle || "unknown"
@@ -830,11 +654,6 @@ export async function POST(req: NextRequest) {
     const originalRoomBase64Input = body.originalRoomBase64 || body.cleanedRoomBase64;
     const mimeType = body.mimeType || "image/png";
     const shortlist = (body.shortlist || []).filter((x) => !!x.image_url);
-    const authoritativeSelection = ensureSelectionCoverage(
-      shortlist,
-      (body.authoritativeSelection || []).filter((x) => !!x?.image_url),
-      theme || ""
-    );
     const editMode = !!body.editMode;
     const baseGeneratedImage = body.baseGeneratedImage || null;
 
@@ -866,7 +685,6 @@ export async function POST(req: NextRequest) {
       usedReferenceCount: number;
       attemptNumber: number;
       catalogueImageParts: GeminiImagePart[];
-      authoritativeSelection: AuthoritativeSelectionItem[];
     } | null = null;
 
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -876,7 +694,6 @@ export async function POST(req: NextRequest) {
         cleanedRoomBase64,
         mimeType,
         shortlist,
-        authoritativeSelection,
         attempt,
         editMode,
         baseGeneratedImage
@@ -891,8 +708,7 @@ export async function POST(req: NextRequest) {
         generated.mimeType,
         roomType,
         theme,
-        generated.validShortlist,
-        generated.authoritativeSelection
+        generated.validShortlist
       );
 
       const score = computeValidationScore(validation);
@@ -906,20 +722,13 @@ export async function POST(req: NextRequest) {
           usedReferenceCount: generated.usedReferenceCount,
           attemptNumber: attempt,
           catalogueImageParts: generated.catalogueImageParts,
-          authoritativeSelection: generated.authoritativeSelection,
         };
       }
 
-      if (isStrongEnoughToStop(validation, score)) {
-        break;
-      }
-
       if (
-        attempt === 1 &&
         validation.pass &&
         validation.catalog_alignment_level !== "poor" &&
-        validation.theme_match_level !== "poor" &&
-        validation.structural_drift_level !== "significant"
+        validation.theme_match_level !== "poor"
       ) {
         break;
       }
@@ -933,15 +742,13 @@ export async function POST(req: NextRequest) {
       best.imageBase64,
       best.mimeType,
       best.shortlist,
-      best.catalogueImageParts,
-      best.authoritativeSelection
+      best.catalogueImageParts
     );
 
     return NextResponse.json({
       ok: true,
       generatedImage: `data:${best.mimeType};base64,${best.imageBase64}`,
       pinnedProducts,
-      selectedProducts: best.authoritativeSelection,
       validationPassed: best.validation.pass,
       validation: best.validation,
       usedReferenceCount: best.usedReferenceCount,

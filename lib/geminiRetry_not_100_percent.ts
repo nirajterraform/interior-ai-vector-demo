@@ -22,19 +22,25 @@ function isRetryableGeminiError(error: unknown): boolean {
     };
   };
 
-  const statusCode = e.status ?? e.code ?? e.error?.code;
+  const topLevelMessage = (e.message || "").toLowerCase();
+  const nestedMessage = (e.error?.message || "").toLowerCase();
+  const combinedMessage = `${topLevelMessage} ${nestedMessage}`;
 
-  const combinedMessage = `${e.message || ""} ${e.error?.message || ""}`.toLowerCase();
+  const statusCode = e.status ?? e.code ?? e.error?.code;
 
   if (statusCode === 429) return true;
 
-  return (
+  if (
+    combinedMessage.includes("429") ||
     combinedMessage.includes("quota") ||
     combinedMessage.includes("rate limit") ||
     combinedMessage.includes("resource exhausted") ||
-    combinedMessage.includes("too many requests") ||
-    combinedMessage.includes("429")
-  );
+    combinedMessage.includes("too many requests")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function computeDelay(
@@ -42,13 +48,13 @@ function computeDelay(
   baseDelayMs: number,
   maxDelayMs: number
 ): number {
-  const exponential = baseDelayMs * Math.pow(2, attempt - 1);
-  const capped = Math.min(exponential, maxDelayMs);
+  const exponentialDelay = baseDelayMs * Math.pow(2, attempt - 1);
+  const cappedDelay = Math.min(exponentialDelay, maxDelayMs);
 
-  // jitter to avoid thundering herd
-  const jitter = Math.floor(Math.random() * 300);
+  // small jitter to avoid retry bursts
+  const jitter = Math.floor(Math.random() * 150);
 
-  return capped + jitter;
+  return cappedDelay + jitter;
 }
 
 export async function withGeminiRetry<T>(
@@ -56,9 +62,9 @@ export async function withGeminiRetry<T>(
   options: GeminiRetryOptions = {}
 ): Promise<T> {
   const {
-    maxRetries = 4,
-    baseDelayMs = 1200,
-    maxDelayMs = 8000,
+    maxRetries = 3,
+    baseDelayMs = 400,
+    maxDelayMs = 1200,
   } = options;
 
   let lastError: unknown;
