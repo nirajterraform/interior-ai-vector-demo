@@ -1,0 +1,119 @@
+import { NextRequest, NextResponse } from "next/server";
+import { GoogleGenAI, Modality } from "@google/genai";
+
+const ai = new GoogleGenAI({
+  vertexai: true,
+  project: process.env.GOOGLE_CLOUD_PROJECT!,
+  location: process.env.GOOGLE_CLOUD_LOCATION || "global",
+});
+
+type CleanRoomBody = {
+  roomImageBase64?: string;
+  mimeType?: string;
+};
+
+function stripDataUrlPrefix(input: string): string {
+  const idx = input.indexOf(",");
+  return idx >= 0 ? input.slice(idx + 1) : input;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as CleanRoomBody;
+
+    const roomImageBase64 = body.roomImageBase64;
+    const mimeType = body.mimeType || "image/png";
+
+    if (!roomImageBase64) {
+      return NextResponse.json(
+        { error: "roomImageBase64 is required" },
+        { status: 400 }
+      );
+    }
+
+    const imageBase64 = stripDataUrlPrefix(roomImageBase64);
+
+    const prompt = `
+You are an expert interior image editor.
+
+Task:
+Clean this room image by removing movable furniture, loose decor, objects, clutter, bedding, rugs, lamps, plants, tables, chairs, sofas, shelves, wall decor, and small accessories.
+
+Strict rules:
+1. Preserve the exact room geometry.
+2. Preserve walls, windows, curtains, doors, ceiling, floor, skirting, trims, built-in architectural structure, and camera angle.
+3. Do NOT redesign the room.
+4. Do NOT add any new furniture or objects.
+5. Do NOT change wall color, flooring material, window placement, curtain placement, room proportions, or perspective.
+6. Remove only movable items and visual clutter.
+7. The result must look like the same room, just cleaned and emptied.
+8. Keep lighting natural and consistent with the source image.
+9. Output one cleaned room image only.
+
+Goal:
+Return a clean, empty version of the same room that can be used as the base for redesign.
+`.trim();
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-image",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType,
+                data: imageBase64,
+              },
+            },
+          ],
+        },
+      ],
+      config: {
+        responseModalities: [Modality.IMAGE, Modality.TEXT],
+      },
+    });
+
+    let cleanedImageBase64: string | null = null;
+    let cleanedMimeType = "image/png";
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData?.data) {
+        cleanedImageBase64 = part.inlineData.data;
+        cleanedMimeType = part.inlineData.mimeType || "image/png";
+        break;
+      }
+    }
+
+    if (!cleanedImageBase64) {
+      return NextResponse.json(
+        {
+          error: "Gemini did not return a cleaned room image.",
+          rawText:
+            response.candidates?.[0]?.content?.parts
+              ?.map((p) => ("text" in p ? p.text : ""))
+              .filter(Boolean)
+              .join("\n") || null,
+        },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json({
+      ok: true,
+      cleanedImage: `data:${cleanedMimeType};base64,${cleanedImageBase64}`,
+      mimeType: cleanedMimeType,
+    });
+  } catch (error) {
+    console.error("clean-room error:", error);
+
+    return NextResponse.json(
+      {
+        error: "Failed to clean room image",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 }
+    );
+  }
+}

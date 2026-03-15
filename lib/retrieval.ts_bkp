@@ -1,0 +1,301 @@
+import { db } from "@/lib/db";
+import { embedQuery } from "@/lib/embeddings";
+import {
+  RetrievedProduct,
+  RetrievalBucket,
+  RetrievalResponse,
+  RoomType,
+} from "@/lib/types";
+
+const ROOM_BUCKETS: Record<RoomType, RetrievalBucket[]> = {
+  living_room: [
+    { bucket: "seating", categories: ["sofa", "chair"], limit: 8, required: true },
+    { bucket: "tables", categories: ["coffee_table", "side_table"], limit: 6, required: true },
+    { bucket: "lighting", categories: ["lamp"], limit: 6, required: true },
+    { bucket: "wall_art", categories: ["wall_art"], limit: 6, required: false },
+    { bucket: "decor", categories: ["decor", "floral_arrangement"], limit: 10, required: false },
+    { bucket: "storage", categories: ["cabinet", "shelf"], limit: 6, required: false },
+    { bucket: "soft_furnishing", categories: ["rug"], limit: 6, required: false },
+  ],
+  bedroom: [
+    { bucket: "bed", categories: ["bed"], limit: 6, required: true },
+    { bucket: "bedside_storage", categories: ["side_table", "dresser"], limit: 6, required: true },
+    { bucket: "lighting", categories: ["lamp"], limit: 6, required: true },
+    { bucket: "mirror_wall_art", categories: ["mirror", "wall_art"], limit: 6, required: false },
+    { bucket: "decor", categories: ["decor", "floral_arrangement"], limit: 8, required: false },
+    { bucket: "soft_furnishing", categories: ["rug", "chair"], limit: 6, required: false },
+  ],
+  dining_room: [
+    { bucket: "dining_table", categories: ["dining_table"], limit: 6, required: true },
+    { bucket: "dining_chairs", categories: ["chair"], limit: 8, required: true },
+    { bucket: "lighting", categories: ["lamp"], limit: 6, required: false },
+    { bucket: "wall_art", categories: ["wall_art", "mirror"], limit: 6, required: false },
+    { bucket: "decor", categories: ["decor", "floral_arrangement"], limit: 8, required: false },
+    { bucket: "storage", categories: ["cabinet"], limit: 6, required: false },
+    { bucket: "soft_furnishing", categories: ["rug"], limit: 4, required: false },
+  ],
+  kitchen: [
+    { bucket: "lighting", categories: ["lamp"], limit: 4, required: false },
+    { bucket: "decor", categories: ["decor"], limit: 8, required: true },
+    { bucket: "wall_art", categories: ["wall_art"], limit: 4, required: false },
+    { bucket: "storage", categories: ["cabinet", "shelf"], limit: 6, required: false },
+  ],
+  office: [
+    { bucket: "seating", categories: ["chair"], limit: 6, required: true },
+    { bucket: "storage", categories: ["shelf", "cabinet"], limit: 6, required: false },
+    { bucket: "lighting", categories: ["lamp"], limit: 4, required: true },
+    { bucket: "wall_art", categories: ["wall_art"], limit: 4, required: false },
+    { bucket: "decor", categories: ["decor"], limit: 6, required: false },
+    { bucket: "soft_furnishing", categories: ["rug"], limit: 4, required: false },
+  ],
+};
+
+const BUCKET_EXCLUDES: Record<string, string[]> = {
+  seating: ["blanket","throw","quilt","duvet","comforter","sheet","bedding","bedsheet","pillow","sham","protector","cover","tapestry","sink","playhouse"],
+  tables: ["book","magazine","guide","manual","lamp shade","painting","playhouse","sink","bedding","quilt"],
+  lighting: ["living room set","bedroom set","dining set","table set","wall art","painting","canvas","print","mirror","sink","playhouse"],
+  wall_art: ["lamp","light","sconce","chandelier","pendant","sink","faucet","playhouse","bedding","quilt","duvet","comforter","pillow","rug","sofa","chair","bed","table","tv stand"],
+  decor: ["bed","bedding","bedsheet","sheet","quilt","duvet","comforter","blanket","throw","pillow","mattress","protector","slipcover","sink","faucet","playhouse","tv stand","dresser"],
+  storage: ["blanket","quilt","duvet","sheet","pillow","playhouse","sink"],
+  soft_furnishing: ["bed","sofa","chair","lamp","wall art","cabinet","tv stand","sink","playhouse"],
+};
+
+const BUCKET_INCLUDES: Record<string, string[]> = {
+  seating: ["sofa","couch","loveseat","armchair","chair","recliner","sectional"],
+  tables: ["coffee table","side table","end table","cocktail table"],
+  lighting: ["lamp","table lamp","floor lamp","wall lamp","sconce","chandelier"],
+  wall_art: ["wall art","canvas","painting","print","poster","artwork"],
+  decor: ["vase","floral","flower","plant","arrangement","decor","candle","bowl","tray"],
+  storage: ["cabinet","sideboard","console","shelf","bookcase","tv stand"],
+  soft_furnishing: ["rug","carpet","runner"],
+};
+
+function vectorLiteral(values: number[]): string {
+  return `[${values.join(",")}]`;
+}
+
+function containsAny(text: string, patterns: string[]): boolean {
+  const lower = text.toLowerCase();
+  return patterns.some((p) => {
+    const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i");
+    return regex.test(lower);
+  });
+}
+
+function hashString(input: string): number {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function seededNoise(seed: string, salt: string): number {
+  const h = hashString(`${seed}:${salt}`);
+  return (h % 1000) / 1000; // 0..0.999
+}
+
+function rotateArray<T>(items: T[], offset: number): T[] {
+  if (!items.length) return items;
+  const n = offset % items.length;
+  return [...items.slice(n), ...items.slice(0, n)];
+}
+
+function rerankBucketItems(
+  bucket: string,
+  items: RetrievedProduct[],
+  theme: string,
+  diversificationSeed: string
+) {
+  const includes = BUCKET_INCLUDES[bucket] ?? [];
+  const excludes = BUCKET_EXCLUDES[bucket] ?? [];
+  const themeWords = theme
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((x) => x.trim())
+    .filter((x) => x.length > 2);
+
+  const filtered = items.filter((item) => {
+    const text = `${item.title} ${item.category ?? ""} ${item.subcategory ?? ""} ${item.normalized_category ?? ""}`.toLowerCase();
+    const normalized = (item.normalized_category ?? "").toLowerCase();
+
+    if (bucket === "wall_art" && normalized !== "wall_art") return false;
+    if (bucket === "soft_furnishing" && normalized !== "rug") return false;
+    if (bucket === "lighting" && normalized !== "lamp") return false;
+    if (bucket === "seating" && !["sofa", "chair"].includes(normalized)) return false;
+    if (bucket === "tables" && !["coffee_table", "side_table"].includes(normalized)) return false;
+
+    if (containsAny(text, excludes)) return false;
+    return true;
+  });
+
+  const scored = filtered.map((item) => {
+    const text = `${item.title} ${item.category ?? ""} ${item.subcategory ?? ""} ${item.normalized_category ?? ""}`.toLowerCase();
+
+    let score = item.similarity * 10;
+
+    if (containsAny(text, includes)) score += 2.5;
+
+    const overlap = themeWords.filter((w) => text.includes(w)).length;
+    score += Math.min(overlap, 4) * 0.35;
+
+    // small deterministic jitter for rotation/diversification
+    const jitter = seededNoise(diversificationSeed, item.product_handle) * 0.35;
+    score += jitter;
+
+    return { ...item, __score: score };
+  });
+
+  scored.sort((a, b) => b.__score - a.__score);
+
+  // Title/vendor-style diversification
+  const diversified: typeof scored = [];
+  const seenTitleFamilies = new Set<string>();
+  const seenHandles = new Set<string>();
+
+  for (const item of scored) {
+    const family = item.title.toLowerCase().split(/\s+/).slice(0, 3).join(" ");
+    if (seenHandles.has(item.product_handle)) continue;
+
+    // allow fewer near-duplicates in early slots
+    if (seenTitleFamilies.has(family) && diversified.length < Math.ceil(scored.length * 0.7)) {
+      continue;
+    }
+
+    diversified.push(item);
+    seenHandles.add(item.product_handle);
+    seenTitleFamilies.add(family);
+  }
+
+  for (const item of scored) {
+    if (!seenHandles.has(item.product_handle)) {
+      diversified.push(item);
+      seenHandles.add(item.product_handle);
+    }
+  }
+
+  return diversified.map(({ __score, ...rest }) => rest);
+}
+
+async function queryBucketCandidates(
+  embedding: number[],
+  roomType: RoomType,
+  bucket: RetrievalBucket,
+  excludedHandles: string[]
+): Promise<RetrievedProduct[]> {
+  const vector = vectorLiteral(embedding);
+
+  // larger pool for diversity
+  const candidateLimit = Math.max(bucket.limit * 6, 30);
+
+  const params: unknown[] = [
+    vector,
+    `%${roomType}%`,
+    bucket.categories,
+    candidateLimit,
+  ];
+
+  let excludedClause = "";
+  if (excludedHandles.length > 0) {
+    excludedClause = `AND product_handle <> ALL($5::text[])`;
+    params.push(excludedHandles);
+  }
+
+  const sql = `
+    SELECT
+      product_handle,
+      title,
+      category,
+      subcategory,
+      normalized_category,
+      primary_image_url,
+      min_price,
+      max_price,
+      1 - (embedding <=> $1::vector) AS similarity
+    FROM products
+    WHERE embedding IS NOT NULL
+      AND primary_image_url IS NOT NULL
+      AND room_tags_json::text ILIKE $2
+      AND normalized_category = ANY($3::text[])
+      ${excludedClause}
+    ORDER BY embedding <=> $1::vector
+    LIMIT $4
+  `;
+
+  const result = await db.query(sql, params);
+
+  return result.rows
+    .filter((row: any) => row.primary_image_url)
+    .map((row: any) => ({
+      bucket: bucket.bucket,
+      product_handle: row.product_handle,
+      title: row.title,
+      category: row.category,
+      subcategory: row.subcategory,
+      normalized_category: row.normalized_category,
+      image_url: row.primary_image_url,
+      min_price: row.min_price ? Number(row.min_price) : null,
+      max_price: row.max_price ? Number(row.max_price) : null,
+      similarity: Number(row.similarity),
+    }));
+}
+
+function buildDiversificationSeed(roomType: RoomType, theme: string): string {
+  // minute-level rotation for POC
+  const minuteBucket = Math.floor(Date.now() / (1000 * 60));
+  return `${roomType}|${theme.toLowerCase()}|${minuteBucket}`;
+}
+
+export async function retrieveCatalogue(
+  roomType: RoomType,
+  theme: string
+): Promise<RetrievalResponse> {
+  const queryText = `${theme} for ${roomType.replaceAll("_", " ")}`;
+  const embedding = await embedQuery(queryText);
+  const buckets = ROOM_BUCKETS[roomType];
+
+  const shortlist: RetrievedProduct[] = [];
+  const excludedHandles: string[] = [];
+  const diversificationSeed = buildDiversificationSeed(roomType, theme);
+
+  for (const bucket of buckets) {
+    const candidates = await queryBucketCandidates(
+      embedding,
+      roomType,
+      bucket,
+      excludedHandles
+    );
+
+    let reranked = rerankBucketItems(
+      bucket.bucket,
+      candidates,
+      theme,
+      diversificationSeed
+    );
+
+    // light rotation inside top band
+    const topBandSize = Math.min(Math.max(bucket.limit * 2, 8), reranked.length);
+    const topBand = reranked.slice(0, topBandSize);
+    const rest = reranked.slice(topBandSize);
+
+    const rotationOffset = Math.floor(
+      seededNoise(diversificationSeed, bucket.bucket) * Math.max(1, topBand.length)
+    );
+
+    reranked = [...rotateArray(topBand, rotationOffset), ...rest];
+
+    const selected = reranked.slice(0, bucket.limit);
+
+    for (const item of selected) {
+      shortlist.push(item);
+      excludedHandles.push(item.product_handle);
+    }
+  }
+
+  return {
+    roomType,
+    theme,
+    shortlist,
+  };
+}

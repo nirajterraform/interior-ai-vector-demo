@@ -1,0 +1,146 @@
+import { NextRequest, NextResponse } from "next/server";
+import { retrieveCatalogue } from "@/lib/retrieval";
+import { RoomType } from "@/lib/types";
+import { db } from "@/lib/db";
+
+type RetrievedProduct = {
+  bucket: string;
+  product_handle: string;
+  title: string;
+  category: string | null;
+  subcategory: string | null;
+  normalized_category: string | null;
+  image_url: string | null;
+  min_price: number | null;
+  max_price: number | null;
+  similarity: number;
+};
+
+async function isImageUrlValid(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      cache: "no-store",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        Referer: "https://www.shopify.com/",
+      },
+    });
+
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function findAlternateImageUrl(productHandle: string): Promise<string | null> {
+  const result = await db.query<{ image_url: string }>(
+    `
+      SELECT image_url
+      FROM product_images
+      WHERE product_handle = $1
+      ORDER BY position NULLS LAST, id
+      LIMIT 12
+    `,
+    [productHandle]
+  );
+
+  for (const row of result.rows) {
+    const ok = await isImageUrlValid(row.image_url);
+    if (ok) return row.image_url;
+  }
+
+  return null;
+}
+
+async function repairShortlistImages(shortlist: RetrievedProduct[]) {
+  const repaired: RetrievedProduct[] = [];
+
+  for (const item of shortlist) {
+    if (!item.image_url) {
+      const alt = await findAlternateImageUrl(item.product_handle);
+      if (alt) repaired.push({ ...item, image_url: alt });
+      continue;
+    }
+
+    const primaryOk = await isImageUrlValid(item.image_url);
+    if (primaryOk) {
+      repaired.push(item);
+      continue;
+    }
+
+    const alt = await findAlternateImageUrl(item.product_handle);
+    if (alt) {
+      repaired.push({ ...item, image_url: alt });
+    }
+  }
+
+  return repaired;
+}
+
+function diversifyAcrossBucket(items: RetrievedProduct[], maxPerBucket: number) {
+  const byBucket = items.reduce<Record<string, RetrievedProduct[]>>((acc, item) => {
+    if (!acc[item.bucket]) acc[item.bucket] = [];
+    acc[item.bucket].push(item);
+    return acc;
+  }, {});
+
+  const diversified: RetrievedProduct[] = [];
+
+  for (const [bucket, bucketItems] of Object.entries(byBucket)) {
+    // keep strongest items, but allow broader set
+    bucketItems.sort((a, b) => b.similarity - a.similarity);
+    diversified.push(...bucketItems.slice(0, maxPerBucket));
+  }
+
+  return diversified;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+
+    const roomType = body.roomType as RoomType;
+    const theme = body.theme as string;
+
+    if (!roomType) {
+      return NextResponse.json(
+        { error: "roomType is required" },
+        { status: 400 }
+      );
+    }
+
+    if (!theme?.trim()) {
+      return NextResponse.json(
+        { error: "theme prompt is required" },
+        { status: 400 }
+      );
+    }
+
+    const result = await retrieveCatalogue(roomType, theme);
+
+    // validate/fix image URLs before returning to frontend
+    const repairedShortlist = await repairShortlistImages(result.shortlist);
+
+    // larger but controlled response
+    const diversifiedShortlist = diversifyAcrossBucket(repairedShortlist, 8);
+
+    return NextResponse.json({
+      ...result,
+      shortlist: diversifiedShortlist.slice(0, 50),
+    });
+  } catch (error) {
+    console.error("Retrieval error:", error);
+
+    return NextResponse.json(
+      {
+        error: "Failed to retrieve catalogue",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,574 @@
+"use client";
+
+import { useMemo, useState } from "react";
+
+type RoomType =
+  | "living_room"
+  | "bedroom"
+  | "dining_room"
+  | "kitchen"
+  | "office";
+
+type RetrievedProduct = {
+  bucket: string;
+  product_handle: string;
+  title: string;
+  category: string | null;
+  subcategory: string | null;
+  normalized_category: string | null;
+  image_url: string | null;
+  min_price: number | null;
+  max_price: number | null;
+  similarity: number;
+};
+
+type RetrievalResponse = {
+  roomType: RoomType;
+  theme: string;
+  shortlist: RetrievedProduct[];
+};
+
+const ROOM_TYPE_OPTIONS: Array<{ value: RoomType; label: string }> = [
+  { value: "living_room", label: "Living Room" },
+  { value: "bedroom", label: "Bedroom" },
+  { value: "dining_room", label: "Dining Room" },
+  { value: "kitchen", label: "Kitchen" },
+  { value: "office", label: "Office" },
+];
+
+function formatRoomTypeLabel(roomType: RoomType | null) {
+  if (!roomType) return "";
+  return ROOM_TYPE_OPTIONS.find((r) => r.value === roomType)?.label ?? roomType;
+}
+
+function groupByBucket(items: RetrievedProduct[]) {
+  return items.reduce<Record<string, RetrievedProduct[]>>((acc, item) => {
+    if (!acc[item.bucket]) acc[item.bucket] = [];
+    acc[item.bucket].push(item);
+    return acc;
+  }, {});
+}
+
+export default function Page() {
+  const [roomType, setRoomType] = useState<RoomType | null>(null);
+  const [theme, setTheme] = useState("modern scandinavian living room");
+
+  const [uploadedRoomImage, setUploadedRoomImage] = useState<string | null>(null);
+  const [cleanedRoomImage, setCleanedRoomImage] = useState<string | null>(null);
+  const [lastGoodImage, setLastGoodImage] = useState<string | null>(null);
+  const [generatedRoomImage, setGeneratedRoomImage] = useState<string | null>(null);
+
+  const [retrievalResult, setRetrievalResult] = useState<RetrievalResponse | null>(null);
+
+  const [uploading, setUploading] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleaningStatus, setCleaningStatus] = useState<string | null>(null);
+  const [retrieving, setRetrieving] = useState(false);
+  const [generating, setGenerating] = useState(false);
+
+  const [error, setError] = useState<string | null>(null);
+
+  const groupedShortlist = useMemo(
+    () => groupByBucket(retrievalResult?.shortlist ?? []),
+    [retrievalResult]
+  );
+
+  async function fileToDataUrl(file: File): Promise<string> {
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function onRoomUpload(file: File | null) {
+    if (!file) return;
+
+    try {
+      setError(null);
+      setUploading(true);
+
+      const dataUrl = await fileToDataUrl(file);
+
+      setUploadedRoomImage(dataUrl);
+      setLastGoodImage(dataUrl);
+      setCleanedRoomImage(null);
+      setGeneratedRoomImage(null);
+      setRetrievalResult(null);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to read the uploaded image.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleCleanRoom() {
+    if (!uploadedRoomImage) {
+      setError("Please upload a room image first.");
+      return;
+    }
+
+    let stillWorkingTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryHintTimer: ReturnType<typeof setTimeout> | null = null;
+    let clearStatusTimer: ReturnType<typeof setTimeout> | null = null;
+
+    try {
+      setError(null);
+      setCleaning(true);
+      setCleaningStatus("Cleaning room...");
+      setGeneratedRoomImage(null);
+
+      stillWorkingTimer = setTimeout(() => {
+        setCleaningStatus("Still working on cleaning...");
+      }, 4000);
+
+      retryHintTimer = setTimeout(() => {
+        setCleaningStatus("Retrying clean room for a better result...");
+      }, 9000);
+
+      const mimeType =
+        uploadedRoomImage.startsWith("data:image/jpeg") ? "image/jpeg" : "image/png";
+
+      const res = await fetch("/api/clean-room", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          roomImageBase64: uploadedRoomImage,
+          mimeType,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || "Failed to clean room.");
+      }
+
+      setCleanedRoomImage(data.cleanedImage);
+      setLastGoodImage(data.cleanedImage);
+
+      if (data.retryUsed) {
+        setCleaningStatus(
+          data.validationPassed === false
+            ? "Used best retry result."
+            : "Retry completed. Best clean-room result applied."
+        );
+      } else {
+        setCleaningStatus("Clean room completed.");
+      }
+
+      if (data.validationPassed === false && data.warning) {
+        setError(data.warning);
+      }
+
+      clearStatusTimer = setTimeout(() => {
+        setCleaningStatus(null);
+      }, 2500);
+    } catch (err) {
+      console.error(err);
+      setCleaningStatus(null);
+      setError(err instanceof Error ? err.message : "Failed to clean room.");
+    } finally {
+      if (stillWorkingTimer) clearTimeout(stillWorkingTimer);
+      if (retryHintTimer) clearTimeout(retryHintTimer);
+      if (clearStatusTimer) {
+        // keep current timeout active
+      }
+
+      setCleaning(false);
+    }
+  }
+
+  async function handleRetrieveCatalogue() {
+    if (!roomType) {
+      setError("Please select a room type.");
+      return;
+    }
+
+    if (!theme.trim()) {
+      setError("Please enter your design requirement.");
+      return;
+    }
+
+    try {
+      setError(null);
+      setRetrieving(true);
+
+      const res = await fetch("/api/retrieve-catalogue", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          roomType,
+          theme,
+        }),
+      });
+
+      const data = (await res.json()) as RetrievalResponse | { error?: string };
+
+      if (!res.ok) {
+        throw new Error(
+          "error" in data
+            ? data.error || "Failed to retrieve catalogue."
+            : "Failed to retrieve catalogue."
+        );
+      }
+
+      setRetrievalResult(data as RetrievalResponse);
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to retrieve catalogue.");
+    } finally {
+      setRetrieving(false);
+    }
+  }
+
+  async function handleGenerateRoom() {
+    if (!roomType) {
+      setError("Please select a room type.");
+      return;
+    }
+
+    if (!theme.trim()) {
+      setError("Please enter your design requirement.");
+      return;
+    }
+
+    if (!lastGoodImage) {
+      setError("Please clean the room first.");
+      return;
+    }
+
+    if (!retrievalResult?.shortlist?.length) {
+      setError("Please retrieve catalogue products first.");
+      return;
+    }
+
+    try {
+      setError(null);
+      setGenerating(true);
+
+      const mimeType =
+        lastGoodImage.startsWith("data:image/jpeg") ? "image/jpeg" : "image/png";
+
+      const res = await fetch("/api/generate-room", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          roomType,
+          theme,
+          cleanedRoomBase64: lastGoodImage,
+          mimeType,
+          shortlist: retrievalResult.shortlist,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to generate room.");
+      }
+
+      setGeneratedRoomImage(data.generatedImage);
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to generate room.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  const canClean = !!uploadedRoomImage && !cleaning;
+  const canRetrieve = !!roomType && !!theme.trim() && !retrieving;
+  const canGenerate = !!lastGoodImage && !!retrievalResult?.shortlist?.length && !generating;
+
+  return (
+    <main className="min-h-screen bg-neutral-50 text-neutral-900">
+      <div className="mx-auto max-w-7xl px-4 py-8 md:px-6">
+        <div className="mb-8">
+          <h1 className="text-3xl font-semibold tracking-tight">
+            Interior AI Vector Demo
+          </h1>
+          <p className="mt-2 text-sm text-neutral-600">
+            Upload a room, clean it, retrieve products from Postgres + pgvector,
+            and generate a redesigned room with Gemini.
+          </p>
+        </div>
+
+        {error && (
+          <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+
+        <div className="grid gap-6 lg:grid-cols-[420px_1fr]">
+          <section className="rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold">1. Upload Room</h2>
+
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-neutral-700">
+                Room image
+              </label>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,image/webp"
+                className="mt-2 block w-full rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm"
+                onChange={(e) => void onRoomUpload(e.target.files?.[0] ?? null)}
+              />
+              <p className="mt-2 text-xs text-neutral-500">
+                Supported: PNG, JPG, JPEG, WEBP
+              </p>
+              {uploading && (
+                <p className="mt-2 text-xs text-neutral-500">Reading image...</p>
+              )}
+            </div>
+
+            <div className="mt-6">
+              <h2 className="text-lg font-semibold">2. Select Room Type</h2>
+              <p className="mt-1 text-sm text-neutral-600">
+                Mandatory for this POC.
+              </p>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                {ROOM_TYPE_OPTIONS.map((option) => {
+                  const selected = roomType === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setRoomType(option.value)}
+                      className={[
+                        "rounded-2xl border px-4 py-3 text-sm font-medium transition",
+                        selected
+                          ? "border-neutral-900 bg-neutral-900 text-white"
+                          : "border-neutral-300 bg-white text-neutral-800 hover:border-neutral-500",
+                      ].join(" ")}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <h2 className="text-lg font-semibold">3. Design Requirement</h2>
+              <p className="mt-1 text-sm text-neutral-600">
+                Example: modern scandinavian living room
+              </p>
+
+              <textarea
+                value={theme}
+                onChange={(e) => setTheme(e.target.value)}
+                rows={4}
+                className="mt-3 w-full rounded-2xl border border-neutral-300 px-4 py-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-500"
+                placeholder="Describe the desired room style..."
+              />
+            </div>
+
+            <div className="mt-6 flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => void handleCleanRoom()}
+                disabled={!canClean}
+                className="rounded-2xl bg-neutral-900 px-4 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {cleaning ? "Cleaning room..." : "Clean Room"}
+              </button>
+
+              {cleaningStatus && (
+                <p className="text-sm text-neutral-600">{cleaningStatus}</p>
+              )}
+
+              <button
+                type="button"
+                onClick={() => void handleRetrieveCatalogue()}
+                disabled={!canRetrieve}
+                className="rounded-2xl border border-neutral-900 bg-white px-4 py-3 text-sm font-medium text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {retrieving ? "Retrieving products..." : "Retrieve Products"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleGenerateRoom()}
+                disabled={!canGenerate}
+                className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {generating ? "Generating AI Room..." : "Generate AI Room"}
+              </button>
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">
+              <div>
+                <span className="font-medium">Selected Room:</span>{" "}
+                {roomType ? formatRoomTypeLabel(roomType) : "Not selected"}
+              </div>
+              <div className="mt-2">
+                <span className="font-medium">Last Good Image:</span>{" "}
+                {lastGoodImage ? "Available" : "Not available"}
+              </div>
+              <div className="mt-2">
+                <span className="font-medium">Retrieved Products:</span>{" "}
+                {retrievalResult?.shortlist?.length ?? 0}
+              </div>
+              <div className="mt-2">
+                <span className="font-medium">Generated Room:</span>{" "}
+                {generatedRoomImage ? "Available" : "Not generated yet"}
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-6">
+            <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
+              <ImageCard
+                title="Uploaded Room"
+                image={uploadedRoomImage}
+                emptyText="No room uploaded yet"
+              />
+              <ImageCard
+                title="Cleaned Room"
+                image={cleanedRoomImage}
+                emptyText="Cleaned room will appear here"
+              />
+              <ImageCard
+                title="Last Good Image"
+                image={lastGoodImage}
+                emptyText="Last good image will appear here"
+              />
+              <ImageCard
+                title="Generated Room"
+                image={generatedRoomImage}
+                emptyText="Generated room will appear here"
+              />
+            </div>
+
+            <div className="rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold">Retrieved Catalogue</h2>
+                  <p className="mt-1 text-sm text-neutral-600">
+                    Shortlisted products from Postgres + pgvector
+                  </p>
+                </div>
+                {retrievalResult && (
+                  <div className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-700">
+                    {retrievalResult.shortlist.length} items
+                  </div>
+                )}
+              </div>
+
+              {!retrievalResult?.shortlist?.length ? (
+                <div className="mt-6 rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-10 text-center text-sm text-neutral-500">
+                  No products retrieved yet.
+                </div>
+              ) : (
+                <div className="mt-6 space-y-6">
+                  {Object.entries(groupedShortlist).map(([bucket, items]) => (
+                    <div key={bucket}>
+                      <div className="mb-3 flex items-center justify-between">
+                        <h3 className="text-sm font-semibold uppercase tracking-wide text-neutral-700">
+                          {bucket.replaceAll("_", " ")}
+                        </h3>
+                        <span className="text-xs text-neutral-500">
+                          {items.length} item(s)
+                        </span>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                        {items.map((item) => (
+                          <div
+                            key={`${item.bucket}-${item.product_handle}`}
+                            className="overflow-hidden rounded-2xl border border-neutral-200 bg-white"
+                          >
+                            <div className="aspect-[4/3] bg-neutral-100">
+                              {item.image_url ? (
+                                <img
+                                  src={item.image_url}
+                                  alt={item.title}
+                                  className="h-full w-full object-cover"
+                                  onError={(e) => {
+                                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                                  }}
+                                />
+                              ) : (
+                                <div className="flex h-full items-center justify-center text-xs text-neutral-500">
+                                  No image
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="p-4">
+                              <div className="line-clamp-2 text-sm font-medium text-neutral-900">
+                                {item.title}
+                              </div>
+
+                              <div className="mt-2 text-xs text-neutral-500">
+                                {item.normalized_category || item.category || "unknown"}
+                              </div>
+
+                              <div className="mt-2 text-xs text-neutral-500">
+                                Similarity: {item.similarity.toFixed(4)}
+                              </div>
+
+                              {(item.min_price !== null || item.max_price !== null) && (
+                                <div className="mt-2 text-sm font-semibold text-neutral-800">
+                                  {item.min_price !== null && item.max_price !== null
+                                    ? item.min_price === item.max_price
+                                      ? `$${item.min_price}`
+                                      : `$${item.min_price} - $${item.max_price}`
+                                    : item.min_price !== null
+                                      ? `$${item.min_price}`
+                                      : `$${item.max_price}`}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function ImageCard({
+  title,
+  image,
+  emptyText,
+}: {
+  title: string;
+  image: string | null;
+  emptyText: string;
+}) {
+  return (
+    <div className="overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
+      <div className="border-b border-neutral-200 px-4 py-3">
+        <h3 className="text-sm font-semibold text-neutral-800">{title}</h3>
+      </div>
+
+      <div className="aspect-[4/3] bg-neutral-100">
+        {image ? (
+          <img src={image} alt={title} className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-500">
+            {emptyText}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

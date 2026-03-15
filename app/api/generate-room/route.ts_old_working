@@ -1,0 +1,253 @@
+import { NextRequest, NextResponse } from "next/server";
+import { GoogleGenAI, Modality } from "@google/genai";
+
+const ai = new GoogleGenAI({
+  vertexai: true,
+  project: process.env.GOOGLE_CLOUD_PROJECT!,
+  location: process.env.GOOGLE_CLOUD_LOCATION || "global",
+});
+
+type ShortlistItem = {
+  bucket: string;
+  product_handle: string;
+  title: string;
+  image_url: string | null;
+  category?: string | null;
+  subcategory?: string | null;
+};
+
+type GenerateRoomBody = {
+  roomType?: string;
+  theme?: string;
+  cleanedRoomBase64?: string;
+  mimeType?: string;
+  shortlist?: ShortlistItem[];
+};
+
+function stripDataUrlPrefix(input: string): string {
+  const idx = input.indexOf(",");
+  return idx >= 0 ? input.slice(idx + 1) : input;
+}
+
+async function urlToInlineData(url: string) {
+  const normalizedUrl = decodeURI(url.trim());
+
+  const tryFetch = async () => {
+    return await fetch(normalizedUrl, {
+      method: "GET",
+      redirect: "follow",
+      cache: "no-store",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        Referer: "https://www.shopify.com/",
+      },
+    });
+  };
+
+  let res = await tryFetch();
+
+  if (!res.ok) {
+    await new Promise((r) => setTimeout(r, 400));
+    res = await tryFetch();
+  }
+
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch catalogue image: ${normalizedUrl} (status ${res.status})`
+    );
+  }
+
+  const contentType = res.headers.get("content-type") || "image/jpeg";
+  const arrayBuffer = await res.arrayBuffer();
+  const base64 = Buffer.from(arrayBuffer).toString("base64");
+
+  return {
+    inlineData: {
+      mimeType: contentType,
+      data: base64,
+    },
+  };
+}
+
+function buildPrompt(
+  roomType: string,
+  theme: string,
+  shortlist: ShortlistItem[]
+) {
+  const shortlistSummary = shortlist.map((item, idx) => {
+    return `${idx + 1}. bucket=${item.bucket}; title=${item.title}; handle=${item.product_handle}`;
+  });
+
+  return `
+You are an expert interior room redesign model.
+
+Task:
+Redesign this ${roomType.replaceAll("_", " ")} using the provided catalogue reference products and the user's design intent.
+
+User design intent:
+${theme}
+
+Catalogue references:
+${shortlistSummary.join("\n")}
+
+Strict rules:
+1. Preserve the exact room geometry.
+2. Preserve walls, windows, curtains, doors, ceiling, floor, skirting, trims, camera angle, perspective, and room proportions.
+3. Use the room image as the structural base.
+4. Use the provided catalogue reference images as the furniture and decor inspiration.
+5. Add or replace only movable furniture and decor elements.
+6. Do NOT alter the architecture.
+7. Do NOT add extra windows, doors, walls, or structural features.
+8. Keep the room realistic, elegant, and consistent with the user's requested style.
+9. Use only items that are visually aligned with the reference catalogue images.
+10. Keep the output photorealistic and e-commerce safe.
+11. Avoid hallucinated furniture that is unrelated to the provided catalogue references.
+12. Return one final redesigned room image only.
+
+Goal:
+Generate a redesigned version of the same room with the same structure, using the reference product images and the user design intent.
+`.trim();
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as GenerateRoomBody;
+
+    const roomType = body.roomType;
+    const theme = body.theme;
+    const cleanedRoomBase64 = body.cleanedRoomBase64;
+    const mimeType = body.mimeType || "image/png";
+    const shortlist = (body.shortlist || []).filter((x) => !!x.image_url);
+
+    if (!roomType) {
+      return NextResponse.json({ error: "roomType is required" }, { status: 400 });
+    }
+
+    if (!theme?.trim()) {
+      return NextResponse.json({ error: "theme is required" }, { status: 400 });
+    }
+
+    if (!cleanedRoomBase64) {
+      return NextResponse.json(
+        { error: "cleanedRoomBase64 is required" },
+        { status: 400 }
+      );
+    }
+
+    if (!shortlist.length) {
+      return NextResponse.json(
+        { error: "shortlist is required and must contain image_url values" },
+        { status: 400 }
+      );
+    }
+
+    const roomImageBase64 = stripDataUrlPrefix(cleanedRoomBase64);
+
+    const resolvedReferenceParts = await Promise.all(
+      shortlist.slice(0, 10).map(async (item) => {
+        try {
+          const part = await urlToInlineData(item.image_url as string);
+          return {
+            ok: true,
+            part,
+            item,
+          };
+        } catch (err) {
+          console.warn("Skipping failed catalogue image:", item.image_url, err);
+          return {
+            ok: false,
+            part: null,
+            item,
+          };
+        }
+      })
+    );
+
+    const referenceParts = resolvedReferenceParts
+      .filter((x) => x.ok && x.part)
+      .map((x) => x.part);
+
+    const validShortlist = resolvedReferenceParts
+      .filter((x) => x.ok)
+      .map((x) => x.item);
+
+    if (!referenceParts.length) {
+      return NextResponse.json(
+        {
+          error: "None of the catalogue images could be fetched from Shopify CDN.",
+        },
+        { status: 502 }
+      );
+    }
+
+    const prompt = buildPrompt(roomType, theme, validShortlist);
+
+    const contents = [
+      {
+        role: "user" as const,
+        parts: [
+          { text: prompt },
+          ...referenceParts,
+          {
+            inlineData: {
+              mimeType,
+              data: roomImageBase64,
+            },
+          },
+        ],
+      },
+    ];
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-image",
+      contents,
+      config: {
+        responseModalities: [Modality.IMAGE, Modality.TEXT],
+      },
+    });
+
+    let generatedImageBase64: string | null = null;
+    let generatedMimeType = "image/png";
+    let rawText: string | null = null;
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData?.data) {
+        generatedImageBase64 = part.inlineData.data;
+        generatedMimeType = part.inlineData.mimeType || "image/png";
+        break;
+      }
+      if ("text" in part && part.text) {
+        rawText = (rawText || "") + part.text;
+      }
+    }
+
+    if (!generatedImageBase64) {
+      return NextResponse.json(
+        {
+          error: "Gemini did not return a redesigned room image.",
+          rawText,
+        },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json({
+      ok: true,
+      generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`,
+      mimeType: generatedMimeType,
+      usedReferenceCount: validShortlist.length,
+    });
+  } catch (error) {
+    console.error("generate-room error:", error);
+
+    return NextResponse.json(
+      {
+        error: "Failed to generate room image",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 }
+    );
+  }
+}
