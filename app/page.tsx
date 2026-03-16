@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type RoomType =
   | "living_room"
@@ -48,21 +50,171 @@ type RetrievalResponse = {
   parsedIntent?: ParsedIntent;
 };
 
+type EditPlanMode =
+  | "initial_generate"
+  | "add_object"
+  | "replace_object"
+  | "remove_object"
+  | "restyle_object"
+  | "whole_room_refresh";
+
+type EditPlan = {
+  mode: EditPlanMode;
+  userRequest: string;
+  targetCategory: string | null;
+  preserveEverythingElse: boolean;
+  allowInnovation: boolean;
+  lockedProductHandles: string[];
+  targetProductHandle?: string | null;
+};
+
+type SceneState = {
+  catalogPinnedProducts: RetrievedProduct[];
+  innovationProducts: RetrievedProduct[];
+  lastEditPlan?: EditPlan | null;
+};
+
 type GenerateRoomResponse = {
   ok: true;
   generatedImage: string;
   pinnedProducts?: RetrievedProduct[];
   selectedProducts?: AuthoritativeSelectionItem[];
   validationPassed?: boolean;
+  editPlan?: EditPlan;
+  sceneState?: SceneState;
 };
 
-const ROOM_TYPE_OPTIONS: Array<{ value: RoomType; label: string }> = [
-  { value: "living_room", label: "Living Room" },
-  { value: "bedroom", label: "Bedroom" },
-  { value: "dining_room", label: "Dining Room" },
-  { value: "kitchen", label: "Kitchen" },
-  { value: "office", label: "Office" },
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const ROOM_TYPE_OPTIONS: Array<{ value: RoomType; label: string; icon: string }> = [
+  { value: "living_room", label: "Living Room", icon: "🛋️" },
+  { value: "bedroom",     label: "Bedroom",     icon: "🛏️" },
+  { value: "dining_room", label: "Dining Room", icon: "🍽️" },
+  { value: "kitchen",     label: "Kitchen",     icon: "🍳" },
+  { value: "office",      label: "Office",      icon: "💼" },
 ];
+
+type StylePreset = {
+  label: string;
+  emoji: string;
+  color: string; // accent colour for active state
+  themes: Partial<Record<RoomType, string>>;
+  defaultTheme: string;
+};
+
+const STYLE_PRESETS: StylePreset[] = [
+  {
+    label: "Scandi",
+    emoji: "🌿",
+    color: "#6b7c5c",
+    defaultTheme: "modern scandinavian style, natural oak wood, white walls, linen textures, minimalist and cosy",
+    themes: {
+      living_room: "modern scandinavian living room, natural oak coffee table, light grey sofa, linen cushions, minimal decor, warm and airy",
+      bedroom:     "scandinavian bedroom, natural oak bed frame, white linen bedding, minimal side tables, soft neutral tones, calm and cosy",
+      dining_room: "scandinavian dining room, natural oak dining table, white dining chairs, pendant lamp, clean lines and warm textures",
+      kitchen:     "scandinavian kitchen, white cabinets, natural wood bar stools, minimal decor, clean lines and functional style",
+      office:      "scandinavian home office, natural oak desk, ergonomic chair, minimal shelving, white walls, calm and focused",
+    },
+  },
+  {
+    label: "Japandi",
+    emoji: "🎋",
+    color: "#8a7560",
+    defaultTheme: "japandi style, wabi-sabi, natural wood and stone, muted earthy tones, zen minimalism",
+    themes: {
+      living_room: "japandi living room, low profile sofa in warm beige, natural wood coffee table, wabi-sabi decor, muted earthy palette, zen and minimal",
+      bedroom:     "japandi bedroom, low platform bed in natural wood, organic linen bedding, neutral stone tones, minimal and serene",
+      dining_room: "japandi dining room, solid wood dining table, simple bench seating, paper pendant light, earthy neutrals and calm",
+      kitchen:     "japandi kitchen, natural wood and matte ceramic, minimal bar stools, earthy tones, functional and serene",
+      office:      "japandi home office, natural wood desk, minimal storage, stone and wood textures, calm neutral palette, focused and serene",
+    },
+  },
+  {
+    label: "Coastal",
+    emoji: "🌊",
+    color: "#4a7fa5",
+    defaultTheme: "coastal style, light and breezy, natural rattan and linen, soft blues and sandy neutrals",
+    themes: {
+      living_room: "coastal living room, rattan accent chairs, soft blue and sandy tones, natural linen sofa, driftwood textures, light and breezy",
+      bedroom:     "coastal bedroom, rattan headboard, white and soft blue bedding, natural textures, breezy and relaxed seaside feel",
+      dining_room: "coastal dining room, whitewashed dining table, rattan dining chairs, soft blue and white palette, relaxed beach house vibe",
+      kitchen:     "coastal kitchen, white and soft blue tones, rattan bar stools, natural textures, light and airy beach house feel",
+      office:      "coastal home office, whitewashed wood desk, rattan chair, soft blue and white tones, natural light and relaxed feel",
+    },
+  },
+  {
+    label: "Luxury",
+    emoji: "✨",
+    color: "#9a7b4f",
+    defaultTheme: "luxury interior, rich velvet, marble surfaces, gold accents, deep jewel tones, sophisticated and opulent",
+    themes: {
+      living_room: "luxury living room, deep velvet sofa in emerald or navy, gold accent lamp, marble coffee table, rich jewel tones, opulent and sophisticated",
+      bedroom:     "luxury master bedroom, upholstered velvet headboard, silk bedding, gold bedside lamps, rich deep tones, glamorous and sophisticated",
+      dining_room: "luxury dining room, marble dining table, upholstered dining chairs, gold chandelier, deep jewel tones, formal and opulent",
+      kitchen:     "luxury kitchen, marble surfaces, gold fixtures, high gloss cabinets, premium materials, sophisticated and refined",
+      office:      "luxury home office, large executive desk, leather chair, gold accents, marble surfaces, rich dark tones, powerful and refined",
+    },
+  },
+  {
+    label: "Industrial",
+    emoji: "⚙️",
+    color: "#5a5a5a",
+    defaultTheme: "industrial style, exposed brick, raw metal, dark wood, Edison bulbs, urban loft aesthetic",
+    themes: {
+      living_room: "industrial living room, dark leather sofa, metal coffee table, exposed brick wall, Edison bulb floor lamp, urban loft feel",
+      bedroom:     "industrial bedroom, metal bed frame, dark wood furniture, exposed brick textures, Edison lighting, urban and moody",
+      dining_room: "industrial dining room, reclaimed wood dining table, metal chairs, exposed pipe details, Edison pendant lights, urban loft",
+      kitchen:     "industrial kitchen, dark metal bar stools, exposed brick or concrete, hanging Edison bulbs, raw and urban aesthetic",
+      office:      "industrial home office, metal and reclaimed wood desk, dark shelving, Edison lighting, urban loft aesthetic, focused and edgy",
+    },
+  },
+  {
+    label: "Boho",
+    emoji: "🪴",
+    color: "#b06b3a",
+    defaultTheme: "bohemian style, warm earthy tones, layered textures, macrame, rattan, and indoor plants",
+    themes: {
+      living_room: "bohemian living room, rattan accent chair, layered rugs, macrame wall hanging, warm terracotta and rust tones, abundant plants",
+      bedroom:     "bohemian bedroom, canopy or rattan headboard, layered textiles, warm earthy tones, macrame decor and plants, relaxed and eclectic",
+      dining_room: "bohemian dining room, wooden dining table, mixed seating, layered rugs, warm earthy palette, eclectic and relaxed",
+      kitchen:     "bohemian kitchen, warm terracotta tones, rattan bar stools, plants and natural textures, eclectic and earthy",
+      office:      "bohemian home office, rattan desk chair, layered rugs, plants and macrame, warm earthy tones, creative and relaxed",
+    },
+  },
+  {
+    label: "Mid-Century",
+    emoji: "🛋️",
+    color: "#c97941",
+    defaultTheme: "mid-century modern style, walnut wood, tapered legs, mustard and teal accents, retro and timeless",
+    themes: {
+      living_room: "mid-century modern living room, walnut credenza, tapered leg sofa in mustard or teal, statement floor lamp, geometric rug, retro and timeless",
+      bedroom:     "mid-century modern bedroom, walnut platform bed with tapered legs, mustard or teal accents, clean lines, retro and timeless",
+      dining_room: "mid-century modern dining room, walnut dining table with tapered legs, molded dining chairs, statement pendant, retro and timeless",
+      kitchen:     "mid-century modern kitchen, walnut accents, retro bar stools, mustard or teal tones, clean lines and functional style",
+      office:      "mid-century modern home office, walnut desk with tapered legs, Eames-style chair, statement lamp, retro and timeless",
+    },
+  },
+  {
+    label: "Farmhouse",
+    emoji: "🌾",
+    color: "#7a6248",
+    defaultTheme: "modern farmhouse style, shiplap, warm whites and greys, reclaimed wood, cosy and rustic charm",
+    themes: {
+      living_room: "modern farmhouse living room, reclaimed wood coffee table, linen sofa in warm white, shiplap accent wall, cosy rustic textures",
+      bedroom:     "modern farmhouse bedroom, reclaimed wood bed frame, white and grey bedding, cosy textiles, warm and rustic charm",
+      dining_room: "modern farmhouse dining room, reclaimed wood dining table, spindle back chairs, white and grey palette, rustic and warm",
+      kitchen:     "modern farmhouse kitchen, white cabinets, reclaimed wood accents, farmhouse bar stools, warm and rustic charm",
+      office:      "modern farmhouse home office, reclaimed wood desk, white and grey tones, cosy textures, rustic and charming",
+    },
+  },
+];
+
+function getPresetTheme(preset: StylePreset, currentRoomType: RoomType | null): string {
+  if (currentRoomType && preset.themes[currentRoomType]) {
+    return preset.themes[currentRoomType]!;
+  }
+  return preset.defaultTheme;
+}
 
 function formatRoomTypeLabel(roomType: RoomType | null) {
   if (!roomType) return "";
@@ -76,11 +228,10 @@ function getMimeTypeFromDataUrl(dataUrl: string): string {
 
 async function resizeImageToDataUrl(
   file: File,
-  maxDimension = 1024,
+  maxDimension = 768,
   quality = 0.82
 ): Promise<string> {
   const objectUrl = URL.createObjectURL(file);
-
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const image = new Image();
@@ -88,45 +239,139 @@ async function resizeImageToDataUrl(
       image.onerror = () => reject(new Error("Failed to load image"));
       image.src = objectUrl;
     });
-
     const scale = Math.min(1, maxDimension / img.width, maxDimension / img.height);
-    const width = Math.round(img.width * scale);
-    const height = Math.round(img.height * scale);
-
     const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Failed to create canvas context");
-
-    ctx.drawImage(img, 0, 0, width, height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", quality);
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
 }
 
+async function parseApiResponse(res: Response): Promise<any> {
+  const contentType = res.headers.get("content-type") || "";
+  try {
+    if (contentType.toLowerCase().includes("application/json")) return await res.json();
+    const text = await res.text();
+    return { ok: res.ok, error: text || `HTTP ${res.status}`, rawText: text };
+  } catch (error) {
+    return { ok: res.ok, error: error instanceof Error ? error.message : `Failed to parse (HTTP ${res.status})` };
+  }
+}
+
+function getApiErrorMessage(res: Response, data: any, fallback: string): string {
+  if (typeof data?.error === "string" && data.error.trim()) return data.error;
+  if (typeof data?.message === "string" && data.message.trim()) return data.message;
+  if (typeof data?.rawText === "string" && data.rawText.trim()) return data.rawText;
+  return `${fallback} (HTTP ${res.status})`;
+}
+
 function hasRenderableImage(product: RetrievedProduct | AuthoritativeSelectionItem | null | undefined): boolean {
-  return !!(
-    product &&
-    typeof product.image_url === "string" &&
-    product.image_url.trim().length > 0
-  );
+  return !!(product && typeof product.image_url === "string" && product.image_url.trim().length > 0);
 }
 
 function dedupeProducts(items: RetrievedProduct[]): RetrievedProduct[] {
   const seen = new Set<string>();
-  const result: RetrievedProduct[] = [];
-
-  for (const item of items) {
-    if (!item?.product_handle || seen.has(item.product_handle)) continue;
+  return items.filter((item) => {
+    if (!item?.product_handle || seen.has(item.product_handle)) return false;
     seen.add(item.product_handle);
-    result.push(item);
-  }
-
-  return result;
+    return true;
+  });
 }
+
+function normalizePromptText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function inferTargetCategory(text: string): string | null {
+  const normalized = normalizePromptText(text);
+  const aliases: Array<[string, string[]]> = [
+    ["sofa", ["sofa", "couch", "sectional", "loveseat", "settee"]],
+    ["chair", ["chair", "armchair", "accent chair", "lounge chair", "recliner"]],
+    ["table", ["table", "coffee table", "side table", "end table", "console", "nightstand"]],
+    ["rug", ["rug", "carpet", "runner"]],
+    ["lamp", ["lamp", "light", "floor lamp", "table lamp", "pendant", "sconce", "lighting"]],
+    ["bed", ["bed", "headboard", "daybed"]],
+    ["desk", ["desk", "workstation", "study table"]],
+    ["cabinet", ["cabinet", "sideboard", "dresser", "wardrobe", "media unit", "bookshelf", "shelf"]],
+    ["mirror", ["mirror", "wall mirror", "floor mirror"]],
+    ["bench", ["bench"]],
+    ["ottoman", ["ottoman", "pouf"]],
+  ];
+  for (const [canonical, words] of aliases) {
+    if (words.some((w) => normalized.includes(w))) return canonical;
+  }
+  return null;
+}
+
+function buildClientEditPlan(params: {
+  theme: string;
+  editMode: boolean;
+  catalogPinnedProducts: RetrievedProduct[];
+}): EditPlan {
+  const normalized = normalizePromptText(params.theme);
+  const targetCategory = inferTargetCategory(params.theme);
+  const lockedProductHandles = params.catalogPinnedProducts.map((x) => x.product_handle).filter(Boolean);
+  let mode: EditPlanMode = params.editMode ? "whole_room_refresh" : "initial_generate";
+  if (params.editMode) {
+    if (/\b(remove|delete|without|take away)\b/.test(normalized)) mode = "remove_object";
+    else if (/\b(replace|swap|change|switch)\b/.test(normalized)) mode = "replace_object";
+    else if (/\b(add|include|insert|put)\b/.test(normalized)) mode = "add_object";
+    else if (/\b(make|restyle|update|turn)\b/.test(normalized) && targetCategory) mode = "restyle_object";
+  }
+  return { mode, userRequest: params.theme, targetCategory, preserveEverythingElse: params.editMode, allowInnovation: true, lockedProductHandles, targetProductHandle: null };
+}
+
+// ── Elapsed Timer Hook ────────────────────────────────────────────────────────
+
+function useElapsedTimer(running: boolean): string {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (running) {
+      startRef.current = Date.now();
+      setElapsed(0);
+      const tick = () => {
+        setElapsed(Math.floor((Date.now() - (startRef.current ?? Date.now())) / 1000));
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    } else {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      startRef.current = null;
+    }
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [running]);
+
+  if (!running || elapsed === 0) return "";
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+// ── Hourglass Animation Component ─────────────────────────────────────────────
+
+function HourglassIcon({ spinning }: { spinning: boolean }) {
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    if (!spinning) return;
+    const frames = ["⏳", "⌛"];
+    const id = setInterval(() => setFrame((f) => (f + 1) % frames.length), 800);
+    return () => clearInterval(id);
+  }, [spinning]);
+  if (!spinning) return null;
+  return <span className="inline-block">{["⏳", "⌛"][frame]}</span>;
+}
+
+// ── Product Card ──────────────────────────────────────────────────────────────
 
 function ProductCard({
   item,
@@ -137,82 +382,84 @@ function ProductCard({
   pinned?: boolean;
   onImageError?: () => void;
 }) {
+  const priceLabel =
+    item.min_price !== null || item.max_price !== null
+      ? item.min_price !== null && item.max_price !== null
+        ? item.min_price === item.max_price
+          ? `$${item.min_price.toLocaleString()}`
+          : `$${item.min_price.toLocaleString()} – $${item.max_price.toLocaleString()}`
+        : item.min_price !== null
+        ? `$${item.min_price.toLocaleString()}`
+        : `$${item.max_price!.toLocaleString()}`
+      : null;
+
   return (
-    <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm">
-      <div className="aspect-[4/3] bg-neutral-100">
+    <div className="group overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm transition hover:shadow-md">
+      <div className="relative aspect-[4/3] overflow-hidden bg-stone-100">
         {item.image_url ? (
           <img
             src={item.image_url}
             alt={item.title}
-            className="h-full w-full object-cover"
+            className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
             onError={() => onImageError?.()}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-xs text-neutral-500">
-            No image
-          </div>
+          <div className="flex h-full items-center justify-center text-xs text-stone-400">No image</div>
+        )}
+        {pinned && item.source !== "innovative" && (
+          <span className="absolute left-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
+            In Room
+          </span>
+        )}
+        {item.source === "innovative" && (
+          <span className="absolute left-2 top-2 rounded-full bg-sky-500 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
+            AI Pick
+          </span>
         )}
       </div>
-
-      <div className="p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          {pinned && (
-            <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-              In your room
-            </span>
-          )}
-          {item.source === "innovative" && (
-            <span className="rounded-full bg-sky-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-sky-800">
-              Innovative product
-            </span>
-          )}
-        </div>
-
-        <div className="mt-2 line-clamp-2 text-sm font-medium text-neutral-900">
-          {item.title}
-        </div>
-
-        <div className="mt-2 text-xs text-neutral-500">
-          {item.normalized_category || item.category || "unknown"}
-        </div>
-
-        {(item.min_price !== null || item.max_price !== null) && (
-          <div className="mt-2 text-sm font-semibold text-neutral-800">
-            {item.min_price !== null && item.max_price !== null
-              ? item.min_price === item.max_price
-                ? `$${item.min_price}`
-                : `$${item.min_price} - $${item.max_price}`
-              : item.min_price !== null
-                ? `$${item.min_price}`
-                : `$${item.max_price}`}
-          </div>
+      <div className="p-3">
+        <p className="line-clamp-2 text-xs font-medium leading-snug text-stone-800">{item.title}</p>
+        <p className="mt-1 text-[10px] uppercase tracking-wide text-stone-400">
+          {item.normalized_category || item.category || "—"}
+        </p>
+        {priceLabel && (
+          <p className="mt-1.5 text-xs font-semibold text-stone-700">{priceLabel}</p>
         )}
       </div>
     </div>
   );
 }
 
-function ImageCard({
+// ── Image Panel ───────────────────────────────────────────────────────────────
+
+function ImagePanel({
   title,
   image,
   emptyText,
+  badge,
 }: {
   title: string;
   image: string | null;
   emptyText: string;
+  badge?: string;
 }) {
   return (
-    <div className="overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
-      <div className="border-b border-neutral-200 px-4 py-3">
-        <h3 className="text-sm font-semibold text-neutral-800">{title}</h3>
+    <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-stone-100 px-4 py-2.5">
+        <h3 className="text-xs font-semibold uppercase tracking-widest text-stone-500">{title}</h3>
+        {badge && (
+          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+            {badge}
+          </span>
+        )}
       </div>
-
-      <div className="aspect-[4/3] bg-neutral-100">
+      <div className="aspect-[4/3] bg-stone-100">
         {image ? (
           <img src={image} alt={title} className="h-full w-full object-cover" />
         ) : (
-          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-500">
-            {emptyText}
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+            <div className="text-2xl opacity-30">🏠</div>
+            <p className="text-xs text-stone-400">{emptyText}</p>
           </div>
         )}
       </div>
@@ -220,7 +467,73 @@ function ImageCard({
   );
 }
 
+// ── Step Badge ────────────────────────────────────────────────────────────────
+
+function StepBadge({ n, label }: { n: number; label: string }) {
+  return (
+    <div className="mb-3 flex items-center gap-2">
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-stone-900 text-[11px] font-bold text-white">
+        {n}
+      </span>
+      <h2 className="text-sm font-semibold uppercase tracking-widest text-stone-700">{label}</h2>
+    </div>
+  );
+}
+
+// ── Action Button ─────────────────────────────────────────────────────────────
+
+function ActionButton({
+  onClick,
+  disabled,
+  loading,
+  elapsed,
+  label,
+  loadingLabel,
+  icon,
+  variant = "default",
+}: {
+  onClick: () => void;
+  disabled: boolean;
+  loading: boolean;
+  elapsed: string;
+  label: string;
+  loadingLabel: string;
+  icon: string;
+  variant?: "default" | "outline" | "primary";
+}) {
+  const base = "relative flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40";
+  const variants = {
+    default: "bg-stone-900 text-white hover:bg-stone-800",
+    outline: "border border-stone-300 bg-white text-stone-800 hover:border-stone-500 hover:bg-stone-50",
+    primary: "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm shadow-emerald-200",
+  };
+
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} className={`${base} ${variants[variant]}`}>
+      {loading ? (
+        <>
+          <HourglassIcon spinning />
+          <span>{loadingLabel}</span>
+          {elapsed && (
+            <span className="ml-auto rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-mono tabular-nums">
+              {elapsed}
+            </span>
+          )}
+        </>
+      ) : (
+        <>
+          <span>{icon}</span>
+          <span>{label}</span>
+        </>
+      )}
+    </button>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+
 export default function Page() {
+  // ── Core state
   const [roomType, setRoomType] = useState<RoomType | null>(null);
   const [theme, setTheme] = useState("modern scandinavian living room");
 
@@ -231,44 +544,45 @@ export default function Page() {
   const [retrievalResult, setRetrievalResult] = useState<RetrievalResponse | null>(null);
   const [displayedProducts, setDisplayedProducts] = useState<RetrievedProduct[]>([]);
   const [pinnedProducts, setPinnedProducts] = useState<RetrievedProduct[]>([]);
+  const [sceneState, setSceneState] = useState<SceneState | null>(null);
+  const [lastEditPlan, setLastEditPlan] = useState<EditPlan | null>(null);
 
   const [seenHandles, setSeenHandles] = useState<string[]>([]);
   const [rotationCursor, setRotationCursor] = useState(0);
   const [brokenImageHandles, setBrokenImageHandles] = useState<string[]>([]);
 
+  // ── Price filter state (B1.1)
+  const [minPrice, setMinPrice] = useState<number | null>(null);
+  const [maxPrice, setMaxPrice] = useState<number | null>(null);
+
+  // ── Loading state
   const [uploading, setUploading] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [retrieving, setRetrieving] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [pipelineRunning, setPipelineRunning] = useState(false);
 
+  // ── Status messages
   const [cleaningStatus, setCleaningStatus] = useState<string | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<string | null>(null);
-
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // ── Elapsed timers
+  const cleanElapsed = useElapsedTimer(cleaning);
+  const retrieveElapsed = useElapsedTimer(retrieving);
+  const pipelineElapsed = useElapsedTimer(pipelineRunning);
+  const loadMoreElapsed = useElapsedTimer(loadingMore);
+
+  // ── Derived product lists
   const visiblePinnedProducts = useMemo(
     () => pinnedProducts.filter((p) => hasRenderableImage(p) && !brokenImageHandles.includes(p.product_handle)),
     [pinnedProducts, brokenImageHandles]
   );
-
-  const selectedCatalogueProducts = useMemo(
-    () =>
-      dedupeProducts(
-        ((retrievalResult?.authoritativeSelection || []) as RetrievedProduct[]).filter((p) => hasRenderableImage(p))
-      ),
-    [retrievalResult]
-  );
-
+  const catalogPinnedProducts = useMemo(() => visiblePinnedProducts.filter((p) => p.source !== "innovative"), [visiblePinnedProducts]);
+  const innovativePinnedProducts = useMemo(() => visiblePinnedProducts.filter((p) => p.source === "innovative"), [visiblePinnedProducts]);
   const visibleDisplayedProducts = useMemo(
-    () =>
-      displayedProducts.filter(
-        (p) =>
-          hasRenderableImage(p) &&
-          !brokenImageHandles.includes(p.product_handle) &&
-          !visiblePinnedProducts.some((pp) => pp.product_handle === p.product_handle)
-      ),
+    () => displayedProducts.filter((p) => hasRenderableImage(p) && !brokenImageHandles.includes(p.product_handle) && !visiblePinnedProducts.some((pp) => pp.product_handle === p.product_handle)),
     [displayedProducts, brokenImageHandles, visiblePinnedProducts]
   );
 
@@ -276,29 +590,20 @@ export default function Page() {
     setBrokenImageHandles((prev) => (prev.includes(handle) ? prev : [...prev, handle]));
   }
 
+  // ── API callers ───────────────────────────────────────────────────────────
+
   async function onRoomUpload(file: File | null) {
     if (!file) return;
-
     try {
-      setError(null);
-      setWarning(null);
-      setUploading(true);
-
-      const dataUrl = await resizeImageToDataUrl(file, 1024, 0.82);
-
+      setError(null); setWarning(null); setUploading(true);
+      const dataUrl = await resizeImageToDataUrl(file, 768, 0.82);
       setUploadedRoomImage(dataUrl);
-      setCleanedRoomImage(null);
-      setGeneratedRoomImage(null);
-      setRetrievalResult(null);
-      setDisplayedProducts([]);
-      setPinnedProducts([]);
-      setSeenHandles([]);
-      setRotationCursor(0);
-      setBrokenImageHandles([]);
-      setCleaningStatus(null);
-      setPipelineStatus(null);
+      setCleanedRoomImage(null); setGeneratedRoomImage(null);
+      setRetrievalResult(null); setDisplayedProducts([]); setPinnedProducts([]);
+      setSceneState(null); setLastEditPlan(null);
+      setSeenHandles([]); setRotationCursor(0); setBrokenImageHandles([]);
+      setCleaningStatus(null); setPipelineStatus(null);
     } catch (err) {
-      console.error(err);
       setError("Failed to read the uploaded image.");
     } finally {
       setUploading(false);
@@ -307,33 +612,13 @@ export default function Page() {
 
   async function runCleanRoom(imageBase64: string) {
     const mimeType = getMimeTypeFromDataUrl(imageBase64);
-
-    const res = await fetch("/api/clean-room", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomImageBase64: imageBase64, mimeType }),
-    });
-
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      throw new Error(data?.error || "Failed to clean room.");
-    }
-
-    return data as {
-      ok: true;
-      cleanedImage: string;
-      retryUsed?: boolean;
-      validationPassed?: boolean;
-    };
+    const res = await fetch("/api/clean-room", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roomImageBase64: imageBase64, mimeType }) });
+    const data = await parseApiResponse(res);
+    if (!res.ok || !data?.ok) throw new Error(getApiErrorMessage(res, data, "Failed to clean room."));
+    return data as { ok: true; cleanedImage: string; retryUsed?: boolean; validationPassed?: boolean };
   }
 
-  async function runRetrieveCatalogue(params: {
-    roomType: RoomType;
-    theme: string;
-    seenHandles?: string[];
-    rotationCursor?: number;
-    pageSize?: number;
-  }) {
+  async function runRetrieveCatalogue(params: { roomType: RoomType; theme: string; seenHandles?: string[]; rotationCursor?: number; pageSize?: number }) {
     const res = await fetch("/api/retrieve-catalogue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -343,80 +628,71 @@ export default function Page() {
         seenHandles: params.seenHandles ?? [],
         rotationCursor: params.rotationCursor ?? 0,
         pageSize: params.pageSize ?? 12,
+        minPrice: minPrice ?? null,
+        maxPrice: maxPrice ?? null,
       }),
     });
-
-    const data = (await res.json()) as RetrievalResponse | { error?: string };
-
-    if (!res.ok) {
-      throw new Error(
-        "error" in data ? data.error || "Failed to retrieve catalogue." : "Failed to retrieve catalogue."
-      );
-    }
-
+    const data = await parseApiResponse(res);
+    if (!res.ok) throw new Error(getApiErrorMessage(res, data, "Failed to retrieve catalogue."));
     return data as RetrievalResponse;
   }
 
   async function runGenerateRoom(params: {
-    roomType: RoomType;
-    theme: string;
-    originalRoomBase64: string;
-    cleanedRoomBase64: string;
-    shortlist: RetrievedProduct[];
-    authoritativeSelection?: AuthoritativeSelectionItem[];
-    editMode?: boolean;
-    baseGeneratedImage?: string | null;
+    roomType: RoomType; theme: string; originalRoomBase64: string; cleanedRoomBase64: string;
+    shortlist: RetrievedProduct[]; authoritativeSelection?: AuthoritativeSelectionItem[];
+    editMode?: boolean; baseGeneratedImage?: string | null;
+    previousCatalogPinnedProducts?: RetrievedProduct[]; previousInnovationProducts?: RetrievedProduct[];
+    editPlan?: EditPlan | null; sceneState?: SceneState | null;
   }) {
     const mimeType = getMimeTypeFromDataUrl(params.cleanedRoomBase64);
-
     const res = await fetch("/api/generate-room", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        roomType: params.roomType,
-        theme: params.theme,
-        originalRoomBase64: params.originalRoomBase64,
-        cleanedRoomBase64: params.cleanedRoomBase64,
-        mimeType,
-        shortlist: params.shortlist,
-        authoritativeSelection: params.authoritativeSelection ?? [],
-        editMode: params.editMode ?? false,
-        baseGeneratedImage: params.baseGeneratedImage ?? null,
+        roomType: params.roomType, theme: params.theme,
+        originalRoomBase64: params.originalRoomBase64, cleanedRoomBase64: params.cleanedRoomBase64, mimeType,
+        shortlist: params.shortlist, authoritativeSelection: params.authoritativeSelection ?? [],
+        editMode: params.editMode ?? false, baseGeneratedImage: params.baseGeneratedImage ?? null,
+        previousCatalogPinnedProducts: params.previousCatalogPinnedProducts ?? [],
+        previousInnovationProducts: params.previousInnovationProducts ?? [],
+        editPlan: params.editPlan ?? null, sceneState: params.sceneState ?? null,
       }),
     });
-
-    const data = await res.json();
-
-    if (!res.ok || !data.ok) {
-      throw new Error(data?.error || "Failed to generate room.");
-    }
-
+    const data = await parseApiResponse(res);
+    if (!res.ok || !data?.ok) throw new Error(getApiErrorMessage(res, data, "Failed to generate room."));
     return data as GenerateRoomResponse;
+  }
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
+
+  async function handleCleanRoom() {
+    if (!uploadedRoomImage) return setError("Please upload a room image first.");
+    try {
+      setError(null); setWarning(null); setCleaning(true); setCleaningStatus("Removing furniture from your room...");
+      const result = await runCleanRoom(uploadedRoomImage);
+      setCleanedRoomImage(result.cleanedImage);
+      if (result.validationPassed === false) setWarning("Clean completed but validation was not fully passed.");
+      setCleaningStatus("Done.");
+      setTimeout(() => setCleaningStatus(null), 2500);
+    } catch (err) {
+      setCleaningStatus(null);
+      setError(err instanceof Error ? err.message : "Failed to clean room.");
+    } finally {
+      setCleaning(false);
+    }
   }
 
   async function handleRetrieveCatalogue() {
     if (!roomType) return setError("Please select a room type.");
     if (!theme.trim()) return setError("Please enter your design requirement.");
-
     try {
-      setError(null);
-      setWarning(null);
-      setRetrieving(true);
-
-      const retrieval = await runRetrieveCatalogue({
-        roomType,
-        theme,
-        seenHandles: [],
-        rotationCursor: 0,
-        pageSize: 12,
-      });
-
+      setError(null); setWarning(null); setRetrieving(true);
+      const retrieval = await runRetrieveCatalogue({ roomType, theme, seenHandles: [], rotationCursor: 0, pageSize: 12 });
       setRetrievalResult(retrieval);
       setDisplayedProducts(dedupeProducts(retrieval.shortlist));
       setSeenHandles(retrieval.shortlist.map((x) => x.product_handle));
       setRotationCursor(retrieval.nextRotationCursor);
     } catch (err) {
-      console.error(err);
       setError(err instanceof Error ? err.message : "Failed to retrieve catalogue.");
     } finally {
       setRetrieving(false);
@@ -425,29 +701,14 @@ export default function Page() {
 
   async function handleLoadMoreProducts() {
     if (!roomType || !theme.trim() || !generatedRoomImage) return;
-
     try {
-      setError(null);
-      setLoadingMore(true);
-
-      const retrieval = await runRetrieveCatalogue({
-        roomType,
-        theme,
-        seenHandles,
-        rotationCursor,
-        pageSize: 12,
-      });
-
+      setError(null); setLoadingMore(true);
+      const retrieval = await runRetrieveCatalogue({ roomType, theme, seenHandles, rotationCursor, pageSize: 12 });
       setRetrievalResult(retrieval);
       setDisplayedProducts((prev) => dedupeProducts([...prev, ...retrieval.shortlist]));
-      setSeenHandles((prev) => {
-        const merged = new Set(prev);
-        for (const item of retrieval.shortlist) merged.add(item.product_handle);
-        return [...merged];
-      });
+      setSeenHandles((prev) => { const m = new Set(prev); for (const i of retrieval.shortlist) m.add(i.product_handle); return [...m]; });
       setRotationCursor(retrieval.nextRotationCursor);
     } catch (err) {
-      console.error(err);
       setError(err instanceof Error ? err.message : "Failed to load more products.");
     } finally {
       setLoadingMore(false);
@@ -458,95 +719,56 @@ export default function Page() {
     if (!uploadedRoomImage) return setError("Please upload a room image first.");
     if (!roomType) return setError("Please select a room type.");
     if (!theme.trim()) return setError("Please enter your design requirement.");
-
     try {
-      setError(null);
-      setWarning(null);
-      setPipelineRunning(true);
-
+      setError(null); setWarning(null); setPipelineRunning(true);
       const needClean = !cleanedRoomImage;
-      const retrievalMatchesCurrentRequest =
-        retrievalResult &&
-        retrievalResult.roomType === roomType &&
-        retrievalResult.theme === theme &&
-        retrievalResult.shortlist?.length > 0;
+      const retrievalMatchesCurrentRequest = retrievalResult && retrievalResult.roomType === roomType && retrievalResult.theme === theme && retrievalResult.shortlist?.length > 0;
       const needRetrieval = !retrievalMatchesCurrentRequest;
-
       let effectiveCleanedImage = cleanedRoomImage;
       let effectiveRetrieval = retrievalResult;
 
       if (needClean || needRetrieval) {
-        setPipelineStatus(
-          needClean && needRetrieval
-            ? "Cleaning room and retrieving catalogue in parallel..."
-            : needClean
-              ? "Cleaning room..."
-              : "Retrieving catalogue..."
-        );
-
+        setPipelineStatus(needClean && needRetrieval ? "Cleaning room and retrieving products in parallel…" : needClean ? "Removing furniture from room…" : "Finding matching products…");
         const [cleanResult, retrieval] = await Promise.all([
           needClean ? runCleanRoom(uploadedRoomImage) : Promise.resolve(null),
-          needRetrieval
-            ? runRetrieveCatalogue({ roomType, theme, seenHandles: [], rotationCursor: 0, pageSize: 12 })
-            : Promise.resolve(null),
+          needRetrieval ? runRetrieveCatalogue({ roomType, theme, seenHandles: [], rotationCursor: 0, pageSize: 12 }) : Promise.resolve(null),
         ]);
-
-        if (cleanResult) {
-          effectiveCleanedImage = cleanResult.cleanedImage;
-          setCleanedRoomImage(cleanResult.cleanedImage);
-        }
-
-        if (retrieval) {
-          effectiveRetrieval = retrieval;
-          setRetrievalResult(retrieval);
-          setDisplayedProducts(dedupeProducts(retrieval.shortlist));
-          setSeenHandles(retrieval.shortlist.map((x) => x.product_handle));
-          setRotationCursor(retrieval.nextRotationCursor);
-        }
+        if (cleanResult) { effectiveCleanedImage = cleanResult.cleanedImage; setCleanedRoomImage(cleanResult.cleanedImage); }
+        if (retrieval) { effectiveRetrieval = retrieval; setRetrievalResult(retrieval); setDisplayedProducts(dedupeProducts(retrieval.shortlist)); setSeenHandles(retrieval.shortlist.map((x) => x.product_handle)); setRotationCursor(retrieval.nextRotationCursor); }
       }
 
-      if (!effectiveCleanedImage) {
-        throw new Error("Clean room image is not available.");
-      }
+      if (!effectiveCleanedImage) throw new Error("Clean room image is not available.");
+      if (!effectiveRetrieval?.shortlist?.length) throw new Error("No catalogue products were retrieved.");
 
-      if (!effectiveRetrieval?.shortlist?.length) {
-        throw new Error("No catalogue products were retrieved.");
-      }
-
-      setPipelineStatus("Generating final AI room...");
+      const editPlan = buildClientEditPlan({ theme, editMode: !!generatedRoomImage, catalogPinnedProducts });
+      setLastEditPlan(editPlan);
+      setPipelineStatus(editPlan.mode === "initial_generate" ? "Generating your AI room design…" : "Applying targeted edit…");
 
       const generateData = await runGenerateRoom({
-        roomType,
-        theme,
-        originalRoomBase64: uploadedRoomImage,
-        cleanedRoomBase64: effectiveCleanedImage,
-        shortlist: effectiveRetrieval.shortlist,
-        authoritativeSelection: effectiveRetrieval.authoritativeSelection || [],
-        editMode: !!generatedRoomImage,
-        baseGeneratedImage: generatedRoomImage,
+        roomType, theme, originalRoomBase64: uploadedRoomImage, cleanedRoomBase64: effectiveCleanedImage!,
+        shortlist: effectiveRetrieval.shortlist, authoritativeSelection: effectiveRetrieval.authoritativeSelection || [],
+        editMode: !!generatedRoomImage, baseGeneratedImage: generatedRoomImage,
+        previousCatalogPinnedProducts: catalogPinnedProducts, previousInnovationProducts: innovativePinnedProducts,
+        editPlan, sceneState,
       });
 
       setGeneratedRoomImage(generateData.generatedImage);
-      if (generateData.selectedProducts?.length) {
-        setRetrievalResult((prev) => prev ? { ...prev, authoritativeSelection: generateData.selectedProducts } : prev);
-      }
+      if (generateData.editPlan) setLastEditPlan(generateData.editPlan);
+      if (generateData.selectedProducts?.length) setRetrievalResult((prev) => prev ? { ...prev, authoritativeSelection: generateData.selectedProducts } : prev);
       if (generateData.pinnedProducts?.length) {
-        setPinnedProducts(
-          dedupeProducts(
-            generateData.pinnedProducts.map((x) => ({
-              ...x,
-              pinned: true,
-            }))
-          )
-        );
+        setPinnedProducts(dedupeProducts(generateData.pinnedProducts.map((x) => ({ ...x, pinned: true }))));
       } else {
         setPinnedProducts([]);
       }
+      if (generateData.sceneState) {
+        setSceneState(generateData.sceneState);
+      } else {
+        setSceneState({ catalogPinnedProducts, innovationProducts: innovativePinnedProducts, lastEditPlan: generateData.editPlan ?? editPlan });
+      }
 
-      setPipelineStatus("Done.");
-      setTimeout(() => setPipelineStatus(null), 2500);
+      setPipelineStatus("Done ✓");
+      setTimeout(() => setPipelineStatus(null), 3000);
     } catch (err) {
-      console.error(err);
       setPipelineStatus(null);
       setError(err instanceof Error ? err.message : "Failed to generate the AI room.");
     } finally {
@@ -557,48 +779,82 @@ export default function Page() {
   const canClean = !!uploadedRoomImage && !cleaning && !pipelineRunning;
   const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning;
   const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning;
+  const priceInvalid = minPrice !== null && maxPrice !== null && minPrice > maxPrice;
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <main className="min-h-screen bg-neutral-50 text-neutral-900">
-      <div className="mx-auto max-w-7xl px-4 py-8 md:px-6">
-        <div className="mb-8">
-          <h1 className="text-3xl font-semibold tracking-tight">Interior AI Vector Demo</h1>
-          <p className="mt-2 text-sm text-neutral-600">
-            No products are shown until the generated room is ready.
-          </p>
+    <main className="min-h-screen bg-[#f7f5f2] font-sans text-stone-900">
+
+      {/* ── Header ── */}
+      <header className="border-b border-stone-200 bg-white px-6 py-4">
+        <div className="mx-auto flex max-w-7xl items-center justify-between">
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-stone-900">Interior<span className="text-emerald-600">AI</span></h1>
+            <p className="text-[11px] text-stone-400 uppercase tracking-widest mt-0.5">Room Design Studio</p>
+          </div>
+          <div className="flex items-center gap-3 text-xs text-stone-500">
+            {roomType && (
+              <span className="flex items-center gap-1.5 rounded-full border border-stone-200 bg-stone-50 px-3 py-1">
+                {ROOM_TYPE_OPTIONS.find((r) => r.value === roomType)?.icon}{" "}
+                {formatRoomTypeLabel(roomType)}
+              </span>
+            )}
+            {generatedRoomImage && (
+              <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-emerald-700 font-medium">
+                ✓ Room Generated
+              </span>
+            )}
+          </div>
         </div>
+      </header>
 
+      {/* ── Notifications ── */}
+      <div className="mx-auto max-w-7xl px-6 pt-4">
         {error && (
-          <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error}
+          <div className="mb-3 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <span className="mt-0.5 shrink-0">⚠️</span>
+            <span>{error}</span>
           </div>
         )}
-
         {warning && (
-          <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-            {warning}
+          <div className="mb-3 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            <span className="mt-0.5 shrink-0">⚡</span>
+            <span>{warning}</span>
           </div>
         )}
+      </div>
 
-        <div className="grid gap-6 lg:grid-cols-[420px_1fr]">
-          <section className="rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold">1. Upload Room</h2>
+      {/* ── Main Grid ── */}
+      <div className="mx-auto max-w-7xl px-6 pb-12 pt-4">
+        <div className="grid gap-5 lg:grid-cols-[380px_1fr]">
 
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-neutral-700">Room image</label>
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/jpg,image/webp"
-                className="mt-2 block w-full rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm"
-                onChange={(e) => void onRoomUpload(e.target.files?.[0] ?? null)}
-              />
-              <p className="mt-2 text-xs text-neutral-500">Supported: PNG, JPG, JPEG, WEBP</p>
-              {uploading && <p className="mt-2 text-xs text-neutral-500">Optimizing image...</p>}
+          {/* ── LEFT PANEL ── */}
+          <aside className="space-y-4">
+
+            {/* Upload */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <StepBadge n={1} label="Upload Room" />
+              <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-stone-200 bg-stone-50 px-4 py-6 text-center transition hover:border-stone-400 hover:bg-stone-100">
+                <span className="text-2xl">📷</span>
+                <span className="text-xs font-medium text-stone-600">
+                  {uploadedRoomImage ? "✓ Image uploaded — click to replace" : "Click to upload room photo"}
+                </span>
+                <span className="text-[10px] text-stone-400">PNG, JPG, WEBP — max 10MB</span>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                  className="hidden"
+                  onChange={(e) => void onRoomUpload(e.target.files?.[0] ?? null)}
+                />
+              </label>
+              {uploading && <p className="mt-2 text-center text-xs text-stone-400 animate-pulse">Optimising image…</p>}
             </div>
 
-            <div className="mt-6">
-              <h2 className="text-lg font-semibold">2. Select Room Type</h2>
-              <div className="mt-4 grid grid-cols-2 gap-3">
+            {/* Room Type */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <StepBadge n={2} label="Room Type" />
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
                 {ROOM_TYPE_OPTIONS.map((option) => {
                   const selected = roomType === option.value;
                   return (
@@ -607,165 +863,280 @@ export default function Page() {
                       type="button"
                       onClick={() => setRoomType(option.value)}
                       className={[
-                        "rounded-2xl border px-4 py-3 text-sm font-medium transition",
+                        "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
                         selected
-                          ? "border-neutral-900 bg-neutral-900 text-white"
-                          : "border-neutral-300 bg-white text-neutral-800 hover:border-neutral-500",
+                          ? "border-stone-900 bg-stone-900 text-white"
+                          : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
                       ].join(" ")}
                     >
-                      {option.label}
+                      <span className="text-base">{option.icon}</span>
+                      <span>{option.label}</span>
                     </button>
                   );
                 })}
               </div>
             </div>
 
-            <div className="mt-6">
-              <h2 className="text-lg font-semibold">3. Design Requirement</h2>
-              <p className="mt-1 text-sm text-neutral-600">
-                Example: modern scandinavian living room, change sofa to blue velvet, make it more luxury
-              </p>
+            {/* Design Requirement */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <StepBadge n={3} label="Design Style" />
+
+              {/* Style Presets */}
+              <div className="flex flex-wrap gap-1.5">
+                {STYLE_PRESETS.map((preset) => {
+                  const presetTheme = getPresetTheme(preset, roomType);
+                  const isActive = theme === presetTheme;
+                  return (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => setTheme(presetTheme)}
+                      style={isActive ? { backgroundColor: preset.color, borderColor: preset.color, color: "#fff" } : {}}
+                      className={[
+                        "rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                        isActive
+                          ? ""
+                          : "border-stone-200 bg-stone-50 text-stone-600 hover:border-stone-400 hover:bg-stone-100",
+                      ].join(" ")}
+                    >
+                      {preset.emoji} {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+
               <textarea
                 value={theme}
                 onChange={(e) => setTheme(e.target.value)}
-                rows={4}
-                className="mt-3 w-full rounded-2xl border border-neutral-300 px-4 py-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-500"
-                placeholder="Describe the desired room style or change request..."
+                rows={3}
+                className="mt-3 w-full resize-none rounded-xl border border-stone-200 bg-stone-50 px-3 py-2.5 text-xs leading-relaxed text-stone-800 outline-none placeholder:text-stone-400 focus:border-stone-400 focus:bg-white transition"
+                placeholder="Describe your desired style, or edit the preset above…"
+              />
+
+              {/* Budget Filter (B1.1) */}
+              <div className="mt-3 rounded-xl border border-stone-200 bg-stone-50 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-stone-500">💰 Budget Filter</span>
+                  {(minPrice !== null || maxPrice !== null) && (
+                    <button
+                      type="button"
+                      onClick={() => { setMinPrice(null); setMaxPrice(null); }}
+                      className="text-[10px] text-stone-400 underline hover:text-stone-600"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[11px] text-stone-400">$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="Min"
+                      value={minPrice ?? ""}
+                      onChange={(e) => setMinPrice(e.target.value === "" ? null : Number(e.target.value))}
+                      className="w-full rounded-lg border border-stone-200 bg-white py-1.5 pl-6 pr-2 text-xs outline-none focus:border-stone-400"
+                    />
+                  </div>
+                  <span className="text-stone-300 text-sm">—</span>
+                  <div className="relative flex-1">
+                    <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[11px] text-stone-400">$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="Max"
+                      value={maxPrice ?? ""}
+                      onChange={(e) => setMaxPrice(e.target.value === "" ? null : Number(e.target.value))}
+                      className="w-full rounded-lg border border-stone-200 bg-white py-1.5 pl-6 pr-2 text-xs outline-none focus:border-stone-400"
+                    />
+                  </div>
+                </div>
+                {priceInvalid && (
+                  <p className="mt-1.5 text-[10px] text-red-500">Min price cannot exceed max price.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm space-y-2.5">
+              <StepBadge n={4} label="Actions" />
+
+              <ActionButton
+                onClick={() => void handleCleanRoom()}
+                disabled={!canClean}
+                loading={cleaning}
+                elapsed={cleanElapsed}
+                label="Clean Room"
+                loadingLabel="Cleaning room…"
+                icon="🧹"
+                variant="default"
+              />
+              {cleaningStatus && !cleaning && (
+                <p className="text-center text-xs text-stone-400">{cleaningStatus}</p>
+              )}
+
+              <ActionButton
+                onClick={() => void handleRetrieveCatalogue()}
+                disabled={!canRetrieve}
+                loading={retrieving}
+                elapsed={retrieveElapsed}
+                label="Find Matching Products"
+                loadingLabel="Searching catalogue…"
+                icon="🔍"
+                variant="outline"
+              />
+
+              <ActionButton
+                onClick={() => void handleGeneratePipeline()}
+                disabled={!canGenerate || priceInvalid}
+                loading={pipelineRunning}
+                elapsed={pipelineElapsed}
+                label={generatedRoomImage ? "Regenerate Room" : "Generate AI Room"}
+                loadingLabel={pipelineStatus ?? "Working…"}
+                icon="✨"
+                variant="primary"
+              />
+
+              {pipelineStatus && !pipelineRunning && (
+                <p className="text-center text-xs text-stone-400">{pipelineStatus}</p>
+              )}
+            </div>
+
+            {/* Status summary */}
+            <div className="rounded-2xl border border-stone-100 bg-white p-4 text-[11px] text-stone-500 space-y-1.5">
+              {[
+                ["Room type", roomType ? formatRoomTypeLabel(roomType) : "—"],
+                ["Image", uploadedRoomImage ? "✓ Uploaded" : "—"],
+                ["Room cleaned", cleanedRoomImage ? "✓ Ready" : "—"],
+                ["Products found", String(visibleDisplayedProducts.length + visiblePinnedProducts.length)],
+                ["Room generated", generatedRoomImage ? "✓ Done" : "—"],
+              ].map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between">
+                  <span className="text-stone-400">{k}</span>
+                  <span className={`font-medium ${v?.startsWith("✓") ? "text-emerald-600" : "text-stone-700"}`}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </aside>
+
+          {/* ── RIGHT PANEL ── */}
+          <section className="space-y-5">
+
+            {/* Room images */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <ImagePanel
+                title="Uploaded Room"
+                image={uploadedRoomImage}
+                emptyText="Upload a room photo to get started"
+              />
+              <ImagePanel
+                title="AI Generated Room"
+                image={generatedRoomImage}
+                emptyText="Your AI redesign will appear here"
+                badge={generatedRoomImage ? "Ready" : undefined}
               />
             </div>
 
-            <div className="mt-6 flex flex-col gap-3">
-              <button
-                type="button"
-                onClick={() => void handleCleanRoom()}
-                disabled={!canClean}
-                className="rounded-2xl bg-neutral-900 px-4 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {cleaning ? "Cleaning room..." : "Clean Room"}
-              </button>
-
-              {cleaningStatus && <p className="text-sm text-neutral-600">{cleaningStatus}</p>}
-
-              <button
-                type="button"
-                onClick={() => void handleRetrieveCatalogue()}
-                disabled={!canRetrieve}
-                className="rounded-2xl border border-neutral-900 bg-white px-4 py-3 text-sm font-medium text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {retrieving ? "Retrieving products..." : "Retrieve Products"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => void handleGeneratePipeline()}
-                disabled={!canGenerate}
-                className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {pipelineRunning ? "Generating AI Room..." : "Generate AI Room"}
-              </button>
-
-              {pipelineStatus && <p className="text-sm text-neutral-600">{pipelineStatus}</p>}
-            </div>
-
-            <div className="mt-6 rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">
-              <div>
-                <span className="font-medium">Selected Room:</span>{" "}
-                {roomType ? formatRoomTypeLabel(roomType) : "Not selected"}
-              </div>
-              <div className="mt-2">
-                <span className="font-medium">Uploaded Image:</span>{" "}
-                {uploadedRoomImage ? "Available" : "Not uploaded"}
-              </div>
-              <div className="mt-2">
-                <span className="font-medium">Pinned Products:</span> {visiblePinnedProducts.length}
-              </div>
-              <div className="mt-2">
-                <span className="font-medium">More Products:</span> {visibleDisplayedProducts.length}
-              </div>
-              <div className="mt-2">
-                <span className="font-medium">Generated Room:</span>{" "}
-                {generatedRoomImage ? "Available" : "Not generated yet"}
-              </div>
-            </div>
-          </section>
-
-          <section className="space-y-6">
-            <div className="grid gap-6 md:grid-cols-2">
-              <ImageCard title="Uploaded Room" image={uploadedRoomImage} emptyText="No room uploaded yet" />
-              <ImageCard title="Generated Room" image={generatedRoomImage} emptyText="Generated room will appear here" />
-            </div>
-
-            <div className="rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm">
-              <div>
-                <h2 className="text-lg font-semibold">Recommended Products</h2>
-                <p className="mt-1 text-sm text-neutral-600">
-                  Pinned products stay compact at the top. More Products loads progressively below.
-                </p>
+            {/* Products */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-sm font-bold uppercase tracking-widest text-stone-700">Recommended Products</h2>
+                  <p className="mt-0.5 text-xs text-stone-400">
+                    Products matched to your room and style
+                  </p>
+                </div>
+                {generatedRoomImage && (
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadMoreProducts()}
+                    disabled={loadingMore || !roomType || !theme.trim()}
+                    className="flex shrink-0 items-center gap-1.5 rounded-xl border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:border-stone-400 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {loadingMore ? (
+                      <>
+                        <HourglassIcon spinning />
+                        <span>Loading…</span>
+                        {loadMoreElapsed && <span className="font-mono text-[10px] text-stone-400">{loadMoreElapsed}</span>}
+                      </>
+                    ) : (
+                      <>
+                        <span>＋</span>
+                        <span>Load More</span>
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
 
               {!generatedRoomImage ? (
-                <div className="mt-6 rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-10 text-center text-sm text-neutral-500">
-                  Generate AI Room first to see pinned products and recommended products.
+                <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-stone-200 bg-stone-50 py-16 text-center">
+                  <span className="text-3xl opacity-30">✨</span>
+                  <p className="text-sm text-stone-400">Generate an AI room to see matched products</p>
                 </div>
               ) : (
-                <div className="mt-6 space-y-8">
-                  {visiblePinnedProducts.length > 0 && (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3">
-                        <h3 className="text-sm font-semibold uppercase tracking-wide text-neutral-700">In your room</h3>
-                        <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
-                          Pinned
-                        </span>
-                      </div>
+                <div className="space-y-8">
 
-                      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                        {visiblePinnedProducts.slice(0, 6).map((item) => (
-                          <ProductCard
-                            key={`pinned-${item.product_handle}`}
-                            item={item}
-                            pinned
-                            onImageError={() => markBrokenImage(item.product_handle)}
-                          />
+                  {/* In your room */}
+                  {catalogPinnedProducts.length > 0 && (
+                    <div>
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className="h-px flex-1 bg-stone-100" />
+                        <span className="rounded-full bg-amber-100 px-3 py-0.5 text-[10px] font-bold uppercase tracking-widest text-amber-700">
+                          🏠 In Your Room
+                        </span>
+                        <span className="h-px flex-1 bg-stone-100" />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                        {catalogPinnedProducts.slice(0, 6).map((item) => (
+                          <ProductCard key={`pinned-${item.product_handle}`} item={item} pinned onImageError={() => markBrokenImage(item.product_handle)} />
                         ))}
                       </div>
                     </div>
                   )}
 
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <h3 className="text-sm font-semibold uppercase tracking-wide text-neutral-700">More Products</h3>
-                        <p className="mt-1 text-xs text-neutral-500">
-                          Explore additional catalogue matches for this room.
-                        </p>
+                  {/* Innovation */}
+                  {innovativePinnedProducts.length > 0 && (
+                    <div>
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className="h-px flex-1 bg-stone-100" />
+                        <span className="rounded-full bg-sky-100 px-3 py-0.5 text-[10px] font-bold uppercase tracking-widest text-sky-700">
+                          💡 AI Discoveries
+                        </span>
+                        <span className="h-px flex-1 bg-stone-100" />
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleLoadMoreProducts()}
-                        disabled={loadingMore || !roomType || !theme.trim()}
-                        className="rounded-2xl border border-neutral-900 bg-white px-4 py-2 text-sm font-medium text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {loadingMore ? "Loading..." : "Load More Products"}
-                      </button>
-                    </div>
-
-                    {visibleDisplayedProducts.length > 0 ? (
-                      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                        {visibleDisplayedProducts.map((item) => (
-                          <ProductCard
-                            key={item.product_handle}
-                            item={item}
-                            onImageError={() => markBrokenImage(item.product_handle)}
-                          />
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                        {innovativePinnedProducts.map((item) => (
+                          <ProductCard key={`innovative-${item.product_handle}`} item={item} pinned onImageError={() => markBrokenImage(item.product_handle)} />
                         ))}
                       </div>
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-8 text-center text-sm text-neutral-500">
-                        No additional products loaded yet.
+                    </div>
+                  )}
+
+                  {/* More products */}
+                  {visibleDisplayedProducts.length > 0 && (
+                    <div>
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className="h-px flex-1 bg-stone-100" />
+                        <span className="rounded-full bg-stone-100 px-3 py-0.5 text-[10px] font-bold uppercase tracking-widest text-stone-500">
+                          More Matches
+                        </span>
+                        <span className="h-px flex-1 bg-stone-100" />
                       </div>
-                    )}
-                  </div>
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                        {visibleDisplayedProducts.map((item) => (
+                          <ProductCard key={item.product_handle} item={item} onImageError={() => markBrokenImage(item.product_handle)} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {catalogPinnedProducts.length === 0 && innovativePinnedProducts.length === 0 && visibleDisplayedProducts.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-stone-200 py-10 text-center text-xs text-stone-400">
+                      No products to display yet.
+                    </div>
+                  )}
                 </div>
               )}
             </div>

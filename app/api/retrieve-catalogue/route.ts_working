@@ -342,9 +342,6 @@ export async function POST(req: NextRequest) {
     const seenHandles = Array.isArray(body?.seenHandles) ? body.seenHandles : [];
     const rotationCursor = typeof body?.rotationCursor === "number" ? body.rotationCursor : 0;
     const pageSize = typeof body?.pageSize === "number" && body.pageSize > 0 ? Math.min(body.pageSize, 18) : 12;
-    // B1.1 — Price filtering (optional, null = no filter applied)
-    const minPrice = typeof body?.minPrice === "number" && body.minPrice >= 0 ? body.minPrice : null;
-    const maxPrice = typeof body?.maxPrice === "number" && body.maxPrice >= 0 ? body.maxPrice : null;
 
     if (!roomType) {
       return NextResponse.json({ error: "roomType is required" }, { status: 400 });
@@ -366,8 +363,6 @@ export async function POST(req: NextRequest) {
       seenHandles,
       rotationCursor,
       pageSize: Math.max(pageSize, 12),
-      minPrice,
-      maxPrice,
     });
 
     const shortlist = filterAndPrioritize(

@@ -1,0 +1,777 @@
+"use client";
+
+import { useMemo, useState } from "react";
+
+type RoomType =
+  | "living_room"
+  | "bedroom"
+  | "dining_room"
+  | "kitchen"
+  | "office";
+
+type RetrievedProduct = {
+  bucket: string;
+  product_handle: string;
+  title: string;
+  category: string | null;
+  subcategory: string | null;
+  normalized_category: string | null;
+  image_url: string | null;
+  min_price: number | null;
+  max_price: number | null;
+  similarity: number;
+  pinned?: boolean;
+  source?: "catalog" | "innovative";
+};
+
+type AuthoritativeSelectionItem = RetrievedProduct & {
+  slot: string;
+  requestedCategory: string;
+  confidence?: number;
+};
+
+type ParsedIntent = {
+  roomType: string;
+  requestedCategories: string[];
+  styleKeywords: string[];
+  avoidCategories: string[];
+  allowKids: boolean;
+  normalizedTheme: string;
+};
+
+type RetrievalResponse = {
+  roomType: RoomType;
+  theme: string;
+  shortlist: RetrievedProduct[];
+  nextRotationCursor: number;
+  authoritativeSelection?: AuthoritativeSelectionItem[];
+  parsedIntent?: ParsedIntent;
+};
+
+type GenerateRoomResponse = {
+  ok: true;
+  generatedImage: string;
+  pinnedProducts?: RetrievedProduct[];
+  selectedProducts?: AuthoritativeSelectionItem[];
+  validationPassed?: boolean;
+};
+
+const ROOM_TYPE_OPTIONS: Array<{ value: RoomType; label: string }> = [
+  { value: "living_room", label: "Living Room" },
+  { value: "bedroom", label: "Bedroom" },
+  { value: "dining_room", label: "Dining Room" },
+  { value: "kitchen", label: "Kitchen" },
+  { value: "office", label: "Office" },
+];
+
+function formatRoomTypeLabel(roomType: RoomType | null) {
+  if (!roomType) return "";
+  return ROOM_TYPE_OPTIONS.find((r) => r.value === roomType)?.label ?? roomType;
+}
+
+function getMimeTypeFromDataUrl(dataUrl: string): string {
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
+  return match?.[1] || "image/jpeg";
+}
+
+async function resizeImageToDataUrl(
+  file: File,
+  maxDimension = 1024,
+  quality = 0.82
+): Promise<string> {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Failed to load image"));
+      image.src = objectUrl;
+    });
+
+    const scale = Math.min(1, maxDimension / img.width, maxDimension / img.height);
+    const width = Math.round(img.width * scale);
+    const height = Math.round(img.height * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Failed to create canvas context");
+
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", quality);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function hasRenderableImage(product: RetrievedProduct | AuthoritativeSelectionItem | null | undefined): boolean {
+  return !!(
+    product &&
+    typeof product.image_url === "string" &&
+    product.image_url.trim().length > 0
+  );
+}
+
+function dedupeProducts(items: RetrievedProduct[]): RetrievedProduct[] {
+  const seen = new Set<string>();
+  const result: RetrievedProduct[] = [];
+
+  for (const item of items) {
+    if (!item?.product_handle || seen.has(item.product_handle)) continue;
+    seen.add(item.product_handle);
+    result.push(item);
+  }
+
+  return result;
+}
+
+function ProductCard({
+  item,
+  pinned = false,
+  onImageError,
+}: {
+  item: RetrievedProduct;
+  pinned?: boolean;
+  onImageError?: () => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm">
+      <div className="aspect-[4/3] bg-neutral-100">
+        {item.image_url ? (
+          <img
+            src={item.image_url}
+            alt={item.title}
+            className="h-full w-full object-cover"
+            onError={() => onImageError?.()}
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center text-xs text-neutral-500">
+            No image
+          </div>
+        )}
+      </div>
+
+      <div className="p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {pinned && (
+            <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+              In your room
+            </span>
+          )}
+          {item.source === "innovative" && (
+            <span className="rounded-full bg-sky-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-sky-800">
+              Innovative product
+            </span>
+          )}
+        </div>
+
+        <div className="mt-2 line-clamp-2 text-sm font-medium text-neutral-900">
+          {item.title}
+        </div>
+
+        <div className="mt-2 text-xs text-neutral-500">
+          {item.normalized_category || item.category || "unknown"}
+        </div>
+
+        {(item.min_price !== null || item.max_price !== null) && (
+          <div className="mt-2 text-sm font-semibold text-neutral-800">
+            {item.min_price !== null && item.max_price !== null
+              ? item.min_price === item.max_price
+                ? `$${item.min_price}`
+                : `$${item.min_price} - $${item.max_price}`
+              : item.min_price !== null
+                ? `$${item.min_price}`
+                : `$${item.max_price}`}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ImageCard({
+  title,
+  image,
+  emptyText,
+}: {
+  title: string;
+  image: string | null;
+  emptyText: string;
+}) {
+  return (
+    <div className="overflow-hidden rounded-3xl border border-neutral-200 bg-white shadow-sm">
+      <div className="border-b border-neutral-200 px-4 py-3">
+        <h3 className="text-sm font-semibold text-neutral-800">{title}</h3>
+      </div>
+
+      <div className="aspect-[4/3] bg-neutral-100">
+        {image ? (
+          <img src={image} alt={title} className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-500">
+            {emptyText}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function Page() {
+  const [roomType, setRoomType] = useState<RoomType | null>(null);
+  const [theme, setTheme] = useState("modern scandinavian living room");
+
+  const [uploadedRoomImage, setUploadedRoomImage] = useState<string | null>(null);
+  const [cleanedRoomImage, setCleanedRoomImage] = useState<string | null>(null);
+  const [generatedRoomImage, setGeneratedRoomImage] = useState<string | null>(null);
+
+  const [retrievalResult, setRetrievalResult] = useState<RetrievalResponse | null>(null);
+  const [displayedProducts, setDisplayedProducts] = useState<RetrievedProduct[]>([]);
+  const [pinnedProducts, setPinnedProducts] = useState<RetrievedProduct[]>([]);
+
+  const [seenHandles, setSeenHandles] = useState<string[]>([]);
+  const [rotationCursor, setRotationCursor] = useState(0);
+  const [brokenImageHandles, setBrokenImageHandles] = useState<string[]>([]);
+
+  const [uploading, setUploading] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [retrieving, setRetrieving] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+
+  const [cleaningStatus, setCleaningStatus] = useState<string | null>(null);
+  const [pipelineStatus, setPipelineStatus] = useState<string | null>(null);
+
+  const [warning, setWarning] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const visiblePinnedProducts = useMemo(
+    () => pinnedProducts.filter((p) => hasRenderableImage(p) && !brokenImageHandles.includes(p.product_handle)),
+    [pinnedProducts, brokenImageHandles]
+  );
+
+  const selectedCatalogueProducts = useMemo(
+    () =>
+      dedupeProducts(
+        ((retrievalResult?.authoritativeSelection || []) as RetrievedProduct[]).filter((p) => hasRenderableImage(p))
+      ),
+    [retrievalResult]
+  );
+
+  const visibleDisplayedProducts = useMemo(
+    () =>
+      displayedProducts.filter(
+        (p) =>
+          hasRenderableImage(p) &&
+          !brokenImageHandles.includes(p.product_handle) &&
+          !visiblePinnedProducts.some((pp) => pp.product_handle === p.product_handle)
+      ),
+    [displayedProducts, brokenImageHandles, visiblePinnedProducts]
+  );
+
+  function markBrokenImage(handle: string) {
+    setBrokenImageHandles((prev) => (prev.includes(handle) ? prev : [...prev, handle]));
+  }
+
+  async function onRoomUpload(file: File | null) {
+    if (!file) return;
+
+    try {
+      setError(null);
+      setWarning(null);
+      setUploading(true);
+
+      const dataUrl = await resizeImageToDataUrl(file, 1024, 0.82);
+
+      setUploadedRoomImage(dataUrl);
+      setCleanedRoomImage(null);
+      setGeneratedRoomImage(null);
+      setRetrievalResult(null);
+      setDisplayedProducts([]);
+      setPinnedProducts([]);
+      setSeenHandles([]);
+      setRotationCursor(0);
+      setBrokenImageHandles([]);
+      setCleaningStatus(null);
+      setPipelineStatus(null);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to read the uploaded image.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function runCleanRoom(imageBase64: string) {
+    const mimeType = getMimeTypeFromDataUrl(imageBase64);
+
+    const res = await fetch("/api/clean-room", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomImageBase64: imageBase64, mimeType }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data?.error || "Failed to clean room.");
+    }
+
+    return data as {
+      ok: true;
+      cleanedImage: string;
+      retryUsed?: boolean;
+      validationPassed?: boolean;
+    };
+  }
+
+  async function runRetrieveCatalogue(params: {
+    roomType: RoomType;
+    theme: string;
+    seenHandles?: string[];
+    rotationCursor?: number;
+    pageSize?: number;
+  }) {
+    const res = await fetch("/api/retrieve-catalogue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        roomType: params.roomType,
+        theme: params.theme,
+        seenHandles: params.seenHandles ?? [],
+        rotationCursor: params.rotationCursor ?? 0,
+        pageSize: params.pageSize ?? 12,
+      }),
+    });
+
+    const data = (await res.json()) as RetrievalResponse | { error?: string };
+
+    if (!res.ok) {
+      throw new Error(
+        "error" in data ? data.error || "Failed to retrieve catalogue." : "Failed to retrieve catalogue."
+      );
+    }
+
+    return data as RetrievalResponse;
+  }
+
+  async function runGenerateRoom(params: {
+    roomType: RoomType;
+    theme: string;
+    originalRoomBase64: string;
+    cleanedRoomBase64: string;
+    shortlist: RetrievedProduct[];
+    authoritativeSelection?: AuthoritativeSelectionItem[];
+    editMode?: boolean;
+    baseGeneratedImage?: string | null;
+  }) {
+    const mimeType = getMimeTypeFromDataUrl(params.cleanedRoomBase64);
+
+    const res = await fetch("/api/generate-room", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        roomType: params.roomType,
+        theme: params.theme,
+        originalRoomBase64: params.originalRoomBase64,
+        cleanedRoomBase64: params.cleanedRoomBase64,
+        mimeType,
+        shortlist: params.shortlist,
+        authoritativeSelection: params.authoritativeSelection ?? [],
+        editMode: params.editMode ?? false,
+        baseGeneratedImage: params.baseGeneratedImage ?? null,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      throw new Error(data?.error || "Failed to generate room.");
+    }
+
+    return data as GenerateRoomResponse;
+  }
+
+  async function handleRetrieveCatalogue() {
+    if (!roomType) return setError("Please select a room type.");
+    if (!theme.trim()) return setError("Please enter your design requirement.");
+
+    try {
+      setError(null);
+      setWarning(null);
+      setRetrieving(true);
+
+      const retrieval = await runRetrieveCatalogue({
+        roomType,
+        theme,
+        seenHandles: [],
+        rotationCursor: 0,
+        pageSize: 12,
+      });
+
+      setRetrievalResult(retrieval);
+      setDisplayedProducts(dedupeProducts(retrieval.shortlist));
+      setSeenHandles(retrieval.shortlist.map((x) => x.product_handle));
+      setRotationCursor(retrieval.nextRotationCursor);
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to retrieve catalogue.");
+    } finally {
+      setRetrieving(false);
+    }
+  }
+
+  async function handleLoadMoreProducts() {
+    if (!roomType || !theme.trim() || !generatedRoomImage) return;
+
+    try {
+      setError(null);
+      setLoadingMore(true);
+
+      const retrieval = await runRetrieveCatalogue({
+        roomType,
+        theme,
+        seenHandles,
+        rotationCursor,
+        pageSize: 12,
+      });
+
+      setRetrievalResult(retrieval);
+      setDisplayedProducts((prev) => dedupeProducts([...prev, ...retrieval.shortlist]));
+      setSeenHandles((prev) => {
+        const merged = new Set(prev);
+        for (const item of retrieval.shortlist) merged.add(item.product_handle);
+        return [...merged];
+      });
+      setRotationCursor(retrieval.nextRotationCursor);
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to load more products.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  async function handleGeneratePipeline() {
+    if (!uploadedRoomImage) return setError("Please upload a room image first.");
+    if (!roomType) return setError("Please select a room type.");
+    if (!theme.trim()) return setError("Please enter your design requirement.");
+
+    try {
+      setError(null);
+      setWarning(null);
+      setPipelineRunning(true);
+
+      const needClean = !cleanedRoomImage;
+      const retrievalMatchesCurrentRequest =
+        retrievalResult &&
+        retrievalResult.roomType === roomType &&
+        retrievalResult.theme === theme &&
+        retrievalResult.shortlist?.length > 0;
+      const needRetrieval = !retrievalMatchesCurrentRequest;
+
+      let effectiveCleanedImage = cleanedRoomImage;
+      let effectiveRetrieval = retrievalResult;
+
+      if (needClean || needRetrieval) {
+        setPipelineStatus(
+          needClean && needRetrieval
+            ? "Cleaning room and retrieving catalogue in parallel..."
+            : needClean
+              ? "Cleaning room..."
+              : "Retrieving catalogue..."
+        );
+
+        const [cleanResult, retrieval] = await Promise.all([
+          needClean ? runCleanRoom(uploadedRoomImage) : Promise.resolve(null),
+          needRetrieval
+            ? runRetrieveCatalogue({ roomType, theme, seenHandles: [], rotationCursor: 0, pageSize: 12 })
+            : Promise.resolve(null),
+        ]);
+
+        if (cleanResult) {
+          effectiveCleanedImage = cleanResult.cleanedImage;
+          setCleanedRoomImage(cleanResult.cleanedImage);
+        }
+
+        if (retrieval) {
+          effectiveRetrieval = retrieval;
+          setRetrievalResult(retrieval);
+          setDisplayedProducts(dedupeProducts(retrieval.shortlist));
+          setSeenHandles(retrieval.shortlist.map((x) => x.product_handle));
+          setRotationCursor(retrieval.nextRotationCursor);
+        }
+      }
+
+      if (!effectiveCleanedImage) {
+        throw new Error("Clean room image is not available.");
+      }
+
+      if (!effectiveRetrieval?.shortlist?.length) {
+        throw new Error("No catalogue products were retrieved.");
+      }
+
+      setPipelineStatus("Generating final AI room...");
+
+      const generateData = await runGenerateRoom({
+        roomType,
+        theme,
+        originalRoomBase64: uploadedRoomImage,
+        cleanedRoomBase64: effectiveCleanedImage,
+        shortlist: effectiveRetrieval.shortlist,
+        authoritativeSelection: effectiveRetrieval.authoritativeSelection || [],
+        editMode: !!generatedRoomImage,
+        baseGeneratedImage: generatedRoomImage,
+      });
+
+      setGeneratedRoomImage(generateData.generatedImage);
+      if (generateData.selectedProducts?.length) {
+        setRetrievalResult((prev) => prev ? { ...prev, authoritativeSelection: generateData.selectedProducts } : prev);
+      }
+      if (generateData.pinnedProducts?.length) {
+        setPinnedProducts(
+          dedupeProducts(
+            generateData.pinnedProducts.map((x) => ({
+              ...x,
+              pinned: true,
+            }))
+          )
+        );
+      } else {
+        setPinnedProducts([]);
+      }
+
+      setPipelineStatus("Done.");
+      setTimeout(() => setPipelineStatus(null), 2500);
+    } catch (err) {
+      console.error(err);
+      setPipelineStatus(null);
+      setError(err instanceof Error ? err.message : "Failed to generate the AI room.");
+    } finally {
+      setPipelineRunning(false);
+    }
+  }
+
+  const canClean = !!uploadedRoomImage && !cleaning && !pipelineRunning;
+  const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning;
+  const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning;
+
+  return (
+    <main className="min-h-screen bg-neutral-50 text-neutral-900">
+      <div className="mx-auto max-w-7xl px-4 py-8 md:px-6">
+        <div className="mb-8">
+          <h1 className="text-3xl font-semibold tracking-tight">Interior AI Vector Demo</h1>
+          <p className="mt-2 text-sm text-neutral-600">
+            No products are shown until the generated room is ready.
+          </p>
+        </div>
+
+        {error && (
+          <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+
+        {warning && (
+          <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            {warning}
+          </div>
+        )}
+
+        <div className="grid gap-6 lg:grid-cols-[420px_1fr]">
+          <section className="rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold">1. Upload Room</h2>
+
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-neutral-700">Room image</label>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,image/webp"
+                className="mt-2 block w-full rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm"
+                onChange={(e) => void onRoomUpload(e.target.files?.[0] ?? null)}
+              />
+              <p className="mt-2 text-xs text-neutral-500">Supported: PNG, JPG, JPEG, WEBP</p>
+              {uploading && <p className="mt-2 text-xs text-neutral-500">Optimizing image...</p>}
+            </div>
+
+            <div className="mt-6">
+              <h2 className="text-lg font-semibold">2. Select Room Type</h2>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                {ROOM_TYPE_OPTIONS.map((option) => {
+                  const selected = roomType === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setRoomType(option.value)}
+                      className={[
+                        "rounded-2xl border px-4 py-3 text-sm font-medium transition",
+                        selected
+                          ? "border-neutral-900 bg-neutral-900 text-white"
+                          : "border-neutral-300 bg-white text-neutral-800 hover:border-neutral-500",
+                      ].join(" ")}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <h2 className="text-lg font-semibold">3. Design Requirement</h2>
+              <p className="mt-1 text-sm text-neutral-600">
+                Example: modern scandinavian living room, change sofa to blue velvet, make it more luxury
+              </p>
+              <textarea
+                value={theme}
+                onChange={(e) => setTheme(e.target.value)}
+                rows={4}
+                className="mt-3 w-full rounded-2xl border border-neutral-300 px-4 py-3 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-500"
+                placeholder="Describe the desired room style or change request..."
+              />
+            </div>
+
+            <div className="mt-6 flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => void handleCleanRoom()}
+                disabled={!canClean}
+                className="rounded-2xl bg-neutral-900 px-4 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {cleaning ? "Cleaning room..." : "Clean Room"}
+              </button>
+
+              {cleaningStatus && <p className="text-sm text-neutral-600">{cleaningStatus}</p>}
+
+              <button
+                type="button"
+                onClick={() => void handleRetrieveCatalogue()}
+                disabled={!canRetrieve}
+                className="rounded-2xl border border-neutral-900 bg-white px-4 py-3 text-sm font-medium text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {retrieving ? "Retrieving products..." : "Retrieve Products"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleGeneratePipeline()}
+                disabled={!canGenerate}
+                className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pipelineRunning ? "Generating AI Room..." : "Generate AI Room"}
+              </button>
+
+              {pipelineStatus && <p className="text-sm text-neutral-600">{pipelineStatus}</p>}
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">
+              <div>
+                <span className="font-medium">Selected Room:</span>{" "}
+                {roomType ? formatRoomTypeLabel(roomType) : "Not selected"}
+              </div>
+              <div className="mt-2">
+                <span className="font-medium">Uploaded Image:</span>{" "}
+                {uploadedRoomImage ? "Available" : "Not uploaded"}
+              </div>
+              <div className="mt-2">
+                <span className="font-medium">Pinned Products:</span> {visiblePinnedProducts.length}
+              </div>
+              <div className="mt-2">
+                <span className="font-medium">More Products:</span> {visibleDisplayedProducts.length}
+              </div>
+              <div className="mt-2">
+                <span className="font-medium">Generated Room:</span>{" "}
+                {generatedRoomImage ? "Available" : "Not generated yet"}
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-6">
+            <div className="grid gap-6 md:grid-cols-2">
+              <ImageCard title="Uploaded Room" image={uploadedRoomImage} emptyText="No room uploaded yet" />
+              <ImageCard title="Generated Room" image={generatedRoomImage} emptyText="Generated room will appear here" />
+            </div>
+
+            <div className="rounded-3xl border border-neutral-200 bg-white p-5 shadow-sm">
+              <div>
+                <h2 className="text-lg font-semibold">Recommended Products</h2>
+                <p className="mt-1 text-sm text-neutral-600">
+                  Pinned products stay compact at the top. More Products loads progressively below.
+                </p>
+              </div>
+
+              {!generatedRoomImage ? (
+                <div className="mt-6 rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-10 text-center text-sm text-neutral-500">
+                  Generate AI Room first to see pinned products and recommended products.
+                </div>
+              ) : (
+                <div className="mt-6 space-y-8">
+                  {visiblePinnedProducts.length > 0 && (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-sm font-semibold uppercase tracking-wide text-neutral-700">In your room</h3>
+                        <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
+                          Pinned
+                        </span>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                        {visiblePinnedProducts.slice(0, 6).map((item) => (
+                          <ProductCard
+                            key={`pinned-${item.product_handle}`}
+                            item={item}
+                            pinned
+                            onImageError={() => markBrokenImage(item.product_handle)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-sm font-semibold uppercase tracking-wide text-neutral-700">More Products</h3>
+                        <p className="mt-1 text-xs text-neutral-500">
+                          Explore additional catalogue matches for this room.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleLoadMoreProducts()}
+                        disabled={loadingMore || !roomType || !theme.trim()}
+                        className="rounded-2xl border border-neutral-900 bg-white px-4 py-2 text-sm font-medium text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {loadingMore ? "Loading..." : "Load More Products"}
+                      </button>
+                    </div>
+
+                    {visibleDisplayedProducts.length > 0 ? (
+                      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                        {visibleDisplayedProducts.map((item) => (
+                          <ProductCard
+                            key={item.product_handle}
+                            item={item}
+                            onImageError={() => markBrokenImage(item.product_handle)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-8 text-center text-sm text-neutral-500">
+                        No additional products loaded yet.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  );
+}
