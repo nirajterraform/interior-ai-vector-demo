@@ -84,15 +84,6 @@ type GenerateRoomResponse = {
   sceneState?: SceneState;
 };
 
-type WishlistItem = {
-  product_handle: string;
-  title: string;
-  image_url: string | null;
-  min_price: number | null;
-  max_price: number | null;
-  category: string | null;
-};
-
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const ROOM_TYPE_OPTIONS: Array<{ value: RoomType; label: string; icon: string }> = [
@@ -106,14 +97,16 @@ const ROOM_TYPE_OPTIONS: Array<{ value: RoomType; label: string; icon: string }>
 type StylePreset = {
   label: string;
   emoji: string;
-  color: string;
+  color: string; // accent colour for active state
   themes: Partial<Record<RoomType, string>>;
   defaultTheme: string;
 };
 
 const STYLE_PRESETS: StylePreset[] = [
   {
-    label: "Scandi", emoji: "🌿", color: "#6b7c5c",
+    label: "Scandi",
+    emoji: "🌿",
+    color: "#6b7c5c",
     defaultTheme: "modern scandinavian style, natural oak wood, white walls, linen textures, minimalist and cosy",
     themes: {
       living_room: "modern scandinavian living room, natural oak coffee table, light grey sofa, linen cushions, minimal decor, warm and airy",
@@ -124,7 +117,9 @@ const STYLE_PRESETS: StylePreset[] = [
     },
   },
   {
-    label: "Japandi", emoji: "🎋", color: "#8a7560",
+    label: "Japandi",
+    emoji: "🎋",
+    color: "#8a7560",
     defaultTheme: "japandi style, wabi-sabi, natural wood and stone, muted earthy tones, zen minimalism",
     themes: {
       living_room: "japandi living room, low profile sofa in warm beige, natural wood coffee table, wabi-sabi decor, muted earthy palette, zen and minimal",
@@ -135,7 +130,9 @@ const STYLE_PRESETS: StylePreset[] = [
     },
   },
   {
-    label: "Coastal", emoji: "🌊", color: "#4a7fa5",
+    label: "Coastal",
+    emoji: "🌊",
+    color: "#4a7fa5",
     defaultTheme: "coastal style, light and breezy, natural rattan and linen, soft blues and sandy neutrals",
     themes: {
       living_room: "coastal living room, rattan accent chairs, soft blue and sandy tones, natural linen sofa, driftwood textures, light and breezy",
@@ -146,7 +143,9 @@ const STYLE_PRESETS: StylePreset[] = [
     },
   },
   {
-    label: "Luxury", emoji: "✨", color: "#9a7b4f",
+    label: "Luxury",
+    emoji: "✨",
+    color: "#9a7b4f",
     defaultTheme: "luxury interior, rich velvet, marble surfaces, gold accents, deep jewel tones, sophisticated and opulent",
     themes: {
       living_room: "luxury living room, deep velvet sofa in emerald or navy, gold accent lamp, marble coffee table, rich jewel tones, opulent and sophisticated",
@@ -157,7 +156,9 @@ const STYLE_PRESETS: StylePreset[] = [
     },
   },
   {
-    label: "Industrial", emoji: "⚙️", color: "#5a5a5a",
+    label: "Industrial",
+    emoji: "⚙️",
+    color: "#5a5a5a",
     defaultTheme: "industrial style, exposed brick, raw metal, dark wood, Edison bulbs, urban loft aesthetic",
     themes: {
       living_room: "industrial living room, dark leather sofa, metal coffee table, exposed brick wall, Edison bulb floor lamp, urban loft feel",
@@ -168,7 +169,9 @@ const STYLE_PRESETS: StylePreset[] = [
     },
   },
   {
-    label: "Boho", emoji: "🪴", color: "#b06b3a",
+    label: "Boho",
+    emoji: "🪴",
+    color: "#b06b3a",
     defaultTheme: "bohemian style, warm earthy tones, layered textures, macrame, rattan, and indoor plants",
     themes: {
       living_room: "bohemian living room, rattan accent chair, layered rugs, macrame wall hanging, warm terracotta and rust tones, abundant plants",
@@ -179,7 +182,9 @@ const STYLE_PRESETS: StylePreset[] = [
     },
   },
   {
-    label: "Mid-Century", emoji: "🛋️", color: "#c97941",
+    label: "Mid-Century",
+    emoji: "🛋️",
+    color: "#c97941",
     defaultTheme: "mid-century modern style, walnut wood, tapered legs, mustard and teal accents, retro and timeless",
     themes: {
       living_room: "mid-century modern living room, walnut credenza, tapered leg sofa in mustard or teal, statement floor lamp, geometric rug, retro and timeless",
@@ -190,7 +195,9 @@ const STYLE_PRESETS: StylePreset[] = [
     },
   },
   {
-    label: "Farmhouse", emoji: "🌾", color: "#7a6248",
+    label: "Farmhouse",
+    emoji: "🌾",
+    color: "#7a6248",
     defaultTheme: "modern farmhouse style, shiplap, warm whites and greys, reclaimed wood, cosy and rustic charm",
     themes: {
       living_room: "modern farmhouse living room, reclaimed wood coffee table, linen sofa in warm white, shiplap accent wall, cosy rustic textures",
@@ -219,7 +226,11 @@ function getMimeTypeFromDataUrl(dataUrl: string): string {
   return match?.[1] || "image/jpeg";
 }
 
-async function resizeImageToDataUrl(file: File, maxDimension = 768, quality = 0.82): Promise<string> {
+async function resizeImageToDataUrl(
+  file: File,
+  maxDimension = 768,
+  quality = 0.82
+): Promise<string> {
   const objectUrl = URL.createObjectURL(file);
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -346,30 +357,18 @@ function useElapsedTimer(running: boolean): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-// ── Hourglass Animation ───────────────────────────────────────────────────────
+// ── Hourglass Animation Component ─────────────────────────────────────────────
 
 function HourglassIcon({ spinning }: { spinning: boolean }) {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     if (!spinning) return;
-    const id = setInterval(() => setFrame((f) => (f + 1) % 2), 800);
+    const frames = ["⏳", "⌛"];
+    const id = setInterval(() => setFrame((f) => (f + 1) % frames.length), 800);
     return () => clearInterval(id);
   }, [spinning]);
   if (!spinning) return null;
-  return <span>{["⏳", "⌛"][frame]}</span>;
-}
-
-// ── Price label helper ────────────────────────────────────────────────────────
-
-function priceLabel(item: { min_price: number | null; max_price: number | null }): string | null {
-  const { min_price, max_price } = item;
-  if (min_price === null && max_price === null) return null;
-  if (min_price !== null && max_price !== null)
-    return min_price === max_price
-      ? `$${min_price.toLocaleString()}`
-      : `$${min_price.toLocaleString()} – $${max_price.toLocaleString()}`;
-  if (min_price !== null) return `$${min_price.toLocaleString()}`;
-  return `$${max_price!.toLocaleString()}`;
+  return <span className="inline-block">{["⏳", "⌛"][frame]}</span>;
 }
 
 // ── Product Card ──────────────────────────────────────────────────────────────
@@ -378,26 +377,24 @@ function ProductCard({
   item,
   pinned = false,
   onImageError,
-  onAddToWishlist,
-  isInWishlist = false,
-  onOpenModal,
 }: {
   item: RetrievedProduct;
   pinned?: boolean;
   onImageError?: () => void;
-  onAddToWishlist?: (item: RetrievedProduct) => void;
-  isInWishlist?: boolean;
-  onOpenModal?: (item: RetrievedProduct) => void;
 }) {
-  const label = priceLabel(item);
-  const isInnovative = item.source === "innovative";
+  const priceLabel =
+    item.min_price !== null || item.max_price !== null
+      ? item.min_price !== null && item.max_price !== null
+        ? item.min_price === item.max_price
+          ? `$${item.min_price.toLocaleString()}`
+          : `$${item.min_price.toLocaleString()} – $${item.max_price.toLocaleString()}`
+        : item.min_price !== null
+        ? `$${item.min_price.toLocaleString()}`
+        : `$${item.max_price!.toLocaleString()}`
+      : null;
 
   return (
-    <div
-      className="group relative overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm transition hover:shadow-md cursor-pointer"
-      onDoubleClick={() => onOpenModal?.(item)}
-    >
-      {/* Image */}
+    <div className="group overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm transition hover:shadow-md">
       <div className="relative aspect-[4/3] overflow-hidden bg-stone-100">
         {item.image_url ? (
           <img
@@ -409,83 +406,42 @@ function ProductCard({
         ) : (
           <div className="flex h-full items-center justify-center text-xs text-stone-400">No image</div>
         )}
-        {pinned && !isInnovative && (
+        {pinned && item.source !== "innovative" && (
           <span className="absolute left-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
             In Room
           </span>
         )}
-        {isInnovative && (
+        {item.source === "innovative" && (
           <span className="absolute left-2 top-2 rounded-full bg-sky-500 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
             AI Pick
           </span>
         )}
-        {/* Hover hint */}
-        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/10">
-          <span className="scale-75 rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-medium text-stone-700 opacity-0 shadow transition group-hover:scale-100 group-hover:opacity-100">
-            Double-click to expand
-          </span>
-        </div>
       </div>
-
-      {/* Body */}
       <div className="p-3">
         <p className="line-clamp-2 text-xs font-medium leading-snug text-stone-800">{item.title}</p>
         <p className="mt-1 text-[10px] uppercase tracking-wide text-stone-400">
           {item.normalized_category || item.category || "—"}
         </p>
-        {label && <p className="mt-1.5 text-xs font-semibold text-stone-700">{label}</p>}
-
-        {/* Actions */}
-        <div className="mt-3 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onAddToWishlist?.(item); }}
-            className={[
-              "flex flex-1 items-center justify-center gap-1 rounded-lg border py-1.5 text-[11px] font-medium transition",
-              isInWishlist
-                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                : "border-stone-200 bg-stone-50 text-stone-600 hover:border-stone-300 hover:bg-stone-100",
-            ].join(" ")}
-          >
-            {isInWishlist ? "✓ Saved" : "🛒 Save"}
-          </button>
-
-          {/* Buy — catalogue products only, not AI discoveries */}
-          {!isInnovative && (
-            <a
-              href={`https://prhomz.com/products/${item.product_handle}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="flex flex-1 items-center justify-center rounded-lg bg-stone-900 py-1.5 text-[11px] font-medium text-white transition hover:bg-stone-700"
-            >
-              Buy
-            </a>
-          )}
-        </div>
+        {priceLabel && (
+          <p className="mt-1.5 text-xs font-semibold text-stone-700">{priceLabel}</p>
+        )}
       </div>
     </div>
   );
 }
 
-// ── Image Panel (with hover overlay for generated room) ───────────────────────
+// ── Image Panel ───────────────────────────────────────────────────────────────
 
 function ImagePanel({
   title,
   image,
   emptyText,
   badge,
-  onDownload,
-  onShopFurnishings,
-  shopFurnishingsLoading = false,
 }: {
   title: string;
   image: string | null;
   emptyText: string;
   badge?: string;
-  onDownload?: () => void;
-  onShopFurnishings?: () => void;
-  shopFurnishingsLoading?: boolean;
 }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
@@ -497,39 +453,9 @@ function ImagePanel({
           </span>
         )}
       </div>
-      <div className="group relative aspect-[4/3] bg-stone-100">
+      <div className="aspect-[4/3] bg-stone-100">
         {image ? (
-          <div className="relative h-full w-full">
-            <img src={image} alt={title} className="h-full w-full object-cover" />
-            {/* Hover overlay */}
-            {(onDownload || onShopFurnishings) && (
-              <div className="absolute inset-0 flex items-end justify-center bg-black/0 pb-5 opacity-0 transition-all duration-200 group-hover:bg-black/20 group-hover:opacity-100">
-                <div className="flex items-center gap-3">
-                  {onShopFurnishings && (
-                    <button
-                      type="button"
-                      onClick={onShopFurnishings}
-                      disabled={shopFurnishingsLoading}
-                      className="flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-stone-800 shadow-lg transition hover:bg-stone-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-70"
-                    >
-                      <span>{shopFurnishingsLoading ? "⏳" : "🛍️"}</span>
-                      <span>{shopFurnishingsLoading ? "Adding to cart…" : "Shop Furnishings"}</span>
-                    </button>
-                  )}
-                  {onDownload && (
-                    <button
-                      type="button"
-                      onClick={onDownload}
-                      title="Download image"
-                      className="flex h-11 w-11 items-center justify-center rounded-full bg-stone-900 text-white shadow-lg transition hover:bg-stone-700 active:scale-95"
-                    >
-                      <span className="text-lg">↓</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
+          <img src={image} alt={title} className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
             <div className="text-2xl opacity-30">🏠</div>
@@ -557,7 +483,14 @@ function StepBadge({ n, label }: { n: number; label: string }) {
 // ── Action Button ─────────────────────────────────────────────────────────────
 
 function ActionButton({
-  onClick, disabled, loading, elapsed, label, loadingLabel, icon, variant = "default",
+  onClick,
+  disabled,
+  loading,
+  elapsed,
+  label,
+  loadingLabel,
+  icon,
+  variant = "default",
 }: {
   onClick: () => void;
   disabled: boolean;
@@ -574,6 +507,7 @@ function ActionButton({
     outline: "border border-stone-300 bg-white text-stone-800 hover:border-stone-500 hover:bg-stone-50",
     primary: "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm shadow-emerald-200",
   };
+
   return (
     <button type="button" onClick={onClick} disabled={disabled} className={`${base} ${variants[variant]}`}>
       {loading ? (
@@ -596,405 +530,72 @@ function ActionButton({
   );
 }
 
-// ── Immersive Product Modal ───────────────────────────────────────────────────
-
-function ProductModal({
-  product,
-  isInWishlist,
-  onClose,
-  onAddToWishlist,
-}: {
-  product: RetrievedProduct;
-  isInWishlist: boolean;
-  onClose: () => void;
-  onAddToWishlist: (item: RetrievedProduct) => void;
-}) {
-  const label = priceLabel(product);
-  const isInnovative = product.source === "innovative";
-
-  // Close on ESC
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      {/* Modal */}
-      <div className="relative w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl">
-        {/* Close */}
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/20 text-white hover:bg-black/40"
-        >
-          ✕
-        </button>
-        {/* Image */}
-        <div className="aspect-[4/3] w-full overflow-hidden bg-stone-100">
-          {product.image_url ? (
-            <img src={product.image_url} alt={product.title} className="h-full w-full object-cover" />
-          ) : (
-            <div className="flex h-full items-center justify-center text-stone-300">No image</div>
-          )}
-        </div>
-        {/* Details */}
-        <div className="p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex-1 min-w-0">
-              <h3 className="text-base font-bold leading-snug text-stone-900">{product.title}</h3>
-              <p className="mt-1 text-xs uppercase tracking-wide text-stone-400">
-                {product.normalized_category || product.category || "—"}
-              </p>
-            </div>
-            {label && (
-              <p className="shrink-0 text-lg font-bold text-stone-900">{label}</p>
-            )}
-          </div>
-          {/* Tags */}
-          <div className="mt-3 flex flex-wrap gap-2">
-            {isInnovative && (
-              <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-700">
-                AI Discovery
-              </span>
-            )}
-            {product.pinned && !isInnovative && (
-              <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">
-                In Your Room
-              </span>
-            )}
-            {product.bucket && (
-              <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-[10px] text-stone-500">
-                {product.bucket.replace(/_/g, " ")}
-              </span>
-            )}
-          </div>
-          {/* Actions */}
-          <div className="mt-5 flex gap-3">
-            <button
-              type="button"
-              onClick={() => onAddToWishlist(product)}
-              className={[
-                "flex flex-1 items-center justify-center gap-2 rounded-xl border py-3 text-sm font-semibold transition",
-                isInWishlist
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100",
-              ].join(" ")}
-            >
-              {isInWishlist ? "✓ Saved to Wishlist" : "🛒 Save to Wishlist"}
-            </button>
-            {!isInnovative && (
-              <a
-                href={`https://prhomz.com/products/${product.product_handle}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-stone-900 py-3 text-sm font-semibold text-white transition hover:bg-stone-700"
-              >
-                Buy on prhomz
-              </a>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Wishlist Panel ────────────────────────────────────────────────────────────
-
-function WishlistPanel({
-  wishlist,
-  onClose,
-  onRemove,
-  onBuyAll,
-  onClear,
-}: {
-  wishlist: WishlistItem[];
-  onClose: () => void;
-  onRemove: (handle: string) => void;
-  onBuyAll: () => void;
-  onClear: () => void;
-}) {
-  const total = wishlist.reduce((sum, item) => sum + (item.min_price ?? 0), 0);
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative flex h-full w-full max-w-sm flex-col bg-white shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-stone-100 px-5 py-4">
-          <div>
-            <h2 className="text-sm font-bold text-stone-900">My Wishlist</h2>
-            <p className="text-xs text-stone-400">{wishlist.length} {wishlist.length === 1 ? "item" : "items"}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-stone-100 text-stone-500"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Items */}
-        <div className="flex-1 overflow-y-auto">
-          {wishlist.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
-              <span className="text-4xl opacity-20">🛒</span>
-              <p className="text-sm text-stone-400">Your wishlist is empty</p>
-              <p className="text-xs text-stone-400">Save products from your generated room</p>
-            </div>
-          ) : (
-            <ul className="divide-y divide-stone-100">
-              {wishlist.map((item) => {
-                const label = priceLabel(item);
-                return (
-                  <li key={item.product_handle} className="flex items-center gap-3 px-5 py-3">
-                    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-stone-100">
-                      {item.image_url ? (
-                        <img src={item.image_url} alt={item.title} className="h-full w-full object-cover" />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-stone-300 text-xs">—</div>
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="line-clamp-2 text-xs font-medium text-stone-800">{item.title}</p>
-                      <p className="mt-0.5 text-[10px] uppercase tracking-wide text-stone-400">{item.category || "—"}</p>
-                      {label && <p className="mt-0.5 text-xs font-semibold text-stone-700">{label}</p>}
-                    </div>
-                    <div className="flex shrink-0 flex-col gap-1.5">
-                      <a
-                        href={`https://prhomz.com/products/${item.product_handle}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="rounded-lg bg-stone-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-stone-700 text-center"
-                      >
-                        Buy
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => onRemove(item.product_handle)}
-                        className="rounded-lg border border-stone-200 px-2.5 py-1 text-[11px] text-stone-500 hover:bg-stone-50"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        {/* Footer */}
-        {wishlist.length > 0 && (
-          <div className="border-t border-stone-100 px-5 py-4 space-y-3">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-stone-500">Estimated total</span>
-              <span className="font-bold text-stone-900">${total.toLocaleString()}</span>
-            </div>
-            <button
-              type="button"
-              onClick={onBuyAll}
-              className="w-full rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 active:scale-[0.98]"
-            >
-              Buy All ({wishlist.length})
-            </button>
-            <button
-              type="button"
-              onClick={onClear}
-              className="w-full text-center text-xs text-stone-400 hover:text-stone-600 underline"
-            >
-              Clear wishlist
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function Page() {
-  // Core state
+  // ── Core state
   const [roomType, setRoomType] = useState<RoomType | null>(null);
   const [theme, setTheme] = useState("modern scandinavian living room");
+
   const [uploadedRoomImage, setUploadedRoomImage] = useState<string | null>(null);
   const [cleanedRoomImage, setCleanedRoomImage] = useState<string | null>(null);
   const [generatedRoomImage, setGeneratedRoomImage] = useState<string | null>(null);
+
   const [retrievalResult, setRetrievalResult] = useState<RetrievalResponse | null>(null);
   const [displayedProducts, setDisplayedProducts] = useState<RetrievedProduct[]>([]);
   const [pinnedProducts, setPinnedProducts] = useState<RetrievedProduct[]>([]);
   const [sceneState, setSceneState] = useState<SceneState | null>(null);
   const [lastEditPlan, setLastEditPlan] = useState<EditPlan | null>(null);
+
   const [seenHandles, setSeenHandles] = useState<string[]>([]);
   const [rotationCursor, setRotationCursor] = useState(0);
   const [brokenImageHandles, setBrokenImageHandles] = useState<string[]>([]);
 
-  // Price filter
+  // ── Price filter state (B1.1)
   const [minPrice, setMinPrice] = useState<number | null>(null);
   const [maxPrice, setMaxPrice] = useState<number | null>(null);
 
-  // Wishlist
-  const [wishlist, setWishlist] = useState<WishlistItem[]>([]);
-  const [wishlistOpen, setWishlistOpen] = useState(false);
-  const [shopFurnishingsLoading, setShopFurnishingsLoading] = useState(false);
-  // Titles of in-room products that couldn't be added to cart
-  const [unavailableProductTitles, setUnavailableProductTitles] = useState<string[]>([]);
-
-  // Modal
-  const [modalProduct, setModalProduct] = useState<RetrievedProduct | null>(null);
-
-  // Loading
+  // ── Loading state
   const [uploading, setUploading] = useState(false);
-  const [detectingRoomType, setDetectingRoomType] = useState(false);
-  const [roomTypeDetectionFailed, setRoomTypeDetectionFailed] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [retrieving, setRetrieving] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [pipelineRunning, setPipelineRunning] = useState(false);
 
-  // Status
+  // ── Status messages
   const [cleaningStatus, setCleaningStatus] = useState<string | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Elapsed timers
-  const cleanElapsed     = useElapsedTimer(cleaning);
-  const retrieveElapsed  = useElapsedTimer(retrieving);
-  const pipelineElapsed  = useElapsedTimer(pipelineRunning);
-  const loadMoreElapsed  = useElapsedTimer(loadingMore);
+  // ── Elapsed timers
+  const cleanElapsed = useElapsedTimer(cleaning);
+  const retrieveElapsed = useElapsedTimer(retrieving);
+  const pipelineElapsed = useElapsedTimer(pipelineRunning);
+  const loadMoreElapsed = useElapsedTimer(loadingMore);
 
-  // Derived product lists
+  // ── Derived product lists
   const visiblePinnedProducts = useMemo(
     () => pinnedProducts.filter((p) => hasRenderableImage(p) && !brokenImageHandles.includes(p.product_handle)),
     [pinnedProducts, brokenImageHandles]
   );
-  const catalogPinnedProducts = useMemo(
-    () => visiblePinnedProducts.filter((p) => p.source !== "innovative"),
-    [visiblePinnedProducts]
-  );
-  const innovativePinnedProducts = useMemo(
-    () => visiblePinnedProducts.filter((p) => p.source === "innovative"),
-    [visiblePinnedProducts]
-  );
+  const catalogPinnedProducts = useMemo(() => visiblePinnedProducts.filter((p) => p.source !== "innovative"), [visiblePinnedProducts]);
+  const innovativePinnedProducts = useMemo(() => visiblePinnedProducts.filter((p) => p.source === "innovative"), [visiblePinnedProducts]);
   const visibleDisplayedProducts = useMemo(
-    () => displayedProducts.filter(
-      (p) => hasRenderableImage(p) &&
-        !brokenImageHandles.includes(p.product_handle) &&
-        !visiblePinnedProducts.some((pp) => pp.product_handle === p.product_handle)
-    ),
+    () => displayedProducts.filter((p) => hasRenderableImage(p) && !brokenImageHandles.includes(p.product_handle) && !visiblePinnedProducts.some((pp) => pp.product_handle === p.product_handle)),
     [displayedProducts, brokenImageHandles, visiblePinnedProducts]
   );
 
   function markBrokenImage(handle: string) {
-    setBrokenImageHandles((prev) => prev.includes(handle) ? prev : [...prev, handle]);
+    setBrokenImageHandles((prev) => (prev.includes(handle) ? prev : [...prev, handle]));
   }
 
-  // ── Download & Shop ──────────────────────────────────────────────────────────
-
-  function handleDownload() {
-    if (!generatedRoomImage) return;
-    const a = document.createElement("a");
-    a.href = generatedRoomImage;
-    a.download = `interior-ai-room-${Date.now()}.jpg`;
-    a.click();
-  }
-
-  async function handleShopFurnishings() {
-    // No pinned products yet — just scroll down
-    if (catalogPinnedProducts.length === 0) {
-      document.getElementById("products-section")?.scrollIntoView({ behavior: "smooth" });
-      return;
-    }
-
-    try {
-      setShopFurnishingsLoading(true);
-      setUnavailableProductTitles([]);
-
-      // Fetch default variant ID for every in-room catalogue product in parallel
-      const results = await Promise.all(
-        catalogPinnedProducts.map(async (item) => {
-          try {
-            const res = await fetch(
-              `https://prhomz.com/products/${item.product_handle}.json`,
-              { headers: { Accept: "application/json" } }
-            );
-            if (!res.ok) return { title: item.title, variantId: null };
-            const data = await res.json();
-            const variantId = data?.product?.variants?.[0]?.id;
-            return {
-              title: item.title,
-              variantId: variantId ? String(variantId) : null,
-            };
-          } catch {
-            return { title: item.title, variantId: null };
-          }
-        })
-      );
-
-      // Products where we got a variant ID go into the cart
-      const cartItems  = results.filter((r) => r.variantId !== null);
-      // Products where we failed (sold out, removed, error) get noted
-      const unavailable = results.filter((r) => r.variantId === null);
-
-      // Show notice for unavailable products
-      if (unavailable.length > 0) {
-        setUnavailableProductTitles(unavailable.map((r) => r.title));
-      }
-
-      // Open one cart tab with all available items — no extra tabs
-      if (cartItems.length > 0) {
-        const cartParts = cartItems.map((r) => `${r.variantId}:1`);
-        window.open(`https://prhomz.com/cart/${cartParts.join(",")}`, "_blank");
-      }
-
-    } catch {
-      // Full fallback — just scroll to products
-      document.getElementById("products-section")?.scrollIntoView({ behavior: "smooth" });
-    } finally {
-      setShopFurnishingsLoading(false);
-    }
-  }
-
-  // ── Wishlist handlers ────────────────────────────────────────────────────────
-
-  function handleAddToWishlist(item: RetrievedProduct) {
-    setWishlist((prev) => {
-      if (prev.some((w) => w.product_handle === item.product_handle)) return prev;
-      return [...prev, {
-        product_handle: item.product_handle,
-        title: item.title,
-        image_url: item.image_url,
-        min_price: item.min_price,
-        max_price: item.max_price,
-        category: item.normalized_category || item.category,
-      }];
-    });
-  }
-
-  function handleRemoveFromWishlist(handle: string) {
-    setWishlist((prev) => prev.filter((w) => w.product_handle !== handle));
-  }
-
-  function handleBuyAll() {
-    wishlist.forEach((item) => {
-      window.open(`https://prhomz.com/products/${item.product_handle}`, "_blank");
-    });
-  }
-
-  // ── API callers ──────────────────────────────────────────────────────────────
+  // ── API callers ───────────────────────────────────────────────────────────
 
   async function onRoomUpload(file: File | null) {
     if (!file) return;
     try {
       setError(null); setWarning(null); setUploading(true);
-      setRoomTypeDetectionFailed(false);
       const dataUrl = await resizeImageToDataUrl(file, 768, 0.82);
       setUploadedRoomImage(dataUrl);
       setCleanedRoomImage(null); setGeneratedRoomImage(null);
@@ -1002,64 +603,33 @@ export default function Page() {
       setSceneState(null); setLastEditPlan(null);
       setSeenHandles([]); setRotationCursor(0); setBrokenImageHandles([]);
       setCleaningStatus(null); setPipelineStatus(null);
-      setRoomType(null);
-
-      // Auto-detect room type in background after upload
-      void detectRoomTypeFromImage(dataUrl);
-    } catch {
+    } catch (err) {
       setError("Failed to read the uploaded image.");
     } finally {
       setUploading(false);
     }
   }
 
-  async function detectRoomTypeFromImage(imageBase64: string) {
-    try {
-      setDetectingRoomType(true);
-      const mimeType = getMimeTypeFromDataUrl(imageBase64);
-      const res = await fetch("/api/detect-room-type", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, mimeType }),
-      });
-      const data = await res.json();
-      if (data?.ok && data?.roomType) {
-        setRoomType(data.roomType as RoomType);
-        setRoomTypeDetectionFailed(false);
-      } else {
-        // Detection failed or returned unknown type — show fallback buttons
-        setRoomTypeDetectionFailed(true);
-      }
-    } catch {
-      setRoomTypeDetectionFailed(true);
-    } finally {
-      setDetectingRoomType(false);
-    }
-  }
-
   async function runCleanRoom(imageBase64: string) {
     const mimeType = getMimeTypeFromDataUrl(imageBase64);
-    const res = await fetch("/api/clean-room", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomImageBase64: imageBase64, mimeType }),
-    });
+    const res = await fetch("/api/clean-room", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roomImageBase64: imageBase64, mimeType }) });
     const data = await parseApiResponse(res);
     if (!res.ok || !data?.ok) throw new Error(getApiErrorMessage(res, data, "Failed to clean room."));
     return data as { ok: true; cleanedImage: string; retryUsed?: boolean; validationPassed?: boolean };
   }
 
-  async function runRetrieveCatalogue(params: {
-    roomType: RoomType; theme: string;
-    seenHandles?: string[]; rotationCursor?: number; pageSize?: number;
-  }) {
+  async function runRetrieveCatalogue(params: { roomType: RoomType; theme: string; seenHandles?: string[]; rotationCursor?: number; pageSize?: number }) {
     const res = await fetch("/api/retrieve-catalogue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        roomType: params.roomType, theme: params.theme,
-        seenHandles: params.seenHandles ?? [], rotationCursor: params.rotationCursor ?? 0,
-        pageSize: params.pageSize ?? 12, minPrice: minPrice ?? null, maxPrice: maxPrice ?? null,
+        roomType: params.roomType,
+        theme: params.theme,
+        seenHandles: params.seenHandles ?? [],
+        rotationCursor: params.rotationCursor ?? 0,
+        pageSize: params.pageSize ?? 12,
+        minPrice: minPrice ?? null,
+        maxPrice: maxPrice ?? null,
       }),
     });
     const data = await parseApiResponse(res);
@@ -1093,12 +663,12 @@ export default function Page() {
     return data as GenerateRoomResponse;
   }
 
-  // ── Handlers ─────────────────────────────────────────────────────────────────
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   async function handleCleanRoom() {
     if (!uploadedRoomImage) return setError("Please upload a room image first.");
     try {
-      setError(null); setWarning(null); setCleaning(true); setCleaningStatus("Removing furniture…");
+      setError(null); setWarning(null); setCleaning(true); setCleaningStatus("Removing furniture from your room...");
       const result = await runCleanRoom(uploadedRoomImage);
       setCleanedRoomImage(result.cleanedImage);
       if (result.validationPassed === false) setWarning("Clean completed but validation was not fully passed.");
@@ -1152,18 +722,13 @@ export default function Page() {
     try {
       setError(null); setWarning(null); setPipelineRunning(true);
       const needClean = !cleanedRoomImage;
-      const retrievalMatchesCurrentRequest = retrievalResult &&
-        retrievalResult.roomType === roomType && retrievalResult.theme === theme &&
-        retrievalResult.shortlist?.length > 0;
+      const retrievalMatchesCurrentRequest = retrievalResult && retrievalResult.roomType === roomType && retrievalResult.theme === theme && retrievalResult.shortlist?.length > 0;
       const needRetrieval = !retrievalMatchesCurrentRequest;
       let effectiveCleanedImage = cleanedRoomImage;
       let effectiveRetrieval = retrievalResult;
 
       if (needClean || needRetrieval) {
-        setPipelineStatus(
-          needClean && needRetrieval ? "Cleaning room and retrieving products in parallel…" :
-          needClean ? "Removing furniture from room…" : "Finding matching products…"
-        );
+        setPipelineStatus(needClean && needRetrieval ? "Cleaning room and retrieving products in parallel…" : needClean ? "Removing furniture from room…" : "Finding matching products…");
         const [cleanResult, retrieval] = await Promise.all([
           needClean ? runCleanRoom(uploadedRoomImage) : Promise.resolve(null),
           needRetrieval ? runRetrieveCatalogue({ roomType, theme, seenHandles: [], rotationCursor: 0, pageSize: 12 }) : Promise.resolve(null),
@@ -1189,8 +754,7 @@ export default function Page() {
 
       setGeneratedRoomImage(generateData.generatedImage);
       if (generateData.editPlan) setLastEditPlan(generateData.editPlan);
-      if (generateData.selectedProducts?.length)
-        setRetrievalResult((prev) => prev ? { ...prev, authoritativeSelection: generateData.selectedProducts } : prev);
+      if (generateData.selectedProducts?.length) setRetrievalResult((prev) => prev ? { ...prev, authoritativeSelection: generateData.selectedProducts } : prev);
       if (generateData.pinnedProducts?.length) {
         setPinnedProducts(dedupeProducts(generateData.pinnedProducts.map((x) => ({ ...x, pinned: true }))));
       } else {
@@ -1212,23 +776,21 @@ export default function Page() {
     }
   }
 
-  const canClean    = !!uploadedRoomImage && !cleaning && !pipelineRunning;
-  const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning && !detectingRoomType;
-  const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning && !detectingRoomType;
+  const canClean = !!uploadedRoomImage && !cleaning && !pipelineRunning;
+  const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning;
+  const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning;
   const priceInvalid = minPrice !== null && maxPrice !== null && minPrice > maxPrice;
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <main className="min-h-screen bg-[#f7f5f2] font-sans text-stone-900">
 
-      {/* Header */}
+      {/* ── Header ── */}
       <header className="border-b border-stone-200 bg-white px-6 py-4">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-stone-900">
-              Interior<span className="text-emerald-600">AI</span>
-            </h1>
+            <h1 className="text-xl font-bold tracking-tight text-stone-900">Interior<span className="text-emerald-600">AI</span></h1>
             <p className="text-[11px] text-stone-400 uppercase tracking-widest mt-0.5">Room Design Studio</p>
           </div>
           <div className="flex items-center gap-3 text-xs text-stone-500">
@@ -1247,7 +809,7 @@ export default function Page() {
         </div>
       </header>
 
-      {/* Notifications */}
+      {/* ── Notifications ── */}
       <div className="mx-auto max-w-7xl px-6 pt-4">
         {error && (
           <div className="mb-3 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -1263,7 +825,7 @@ export default function Page() {
         )}
       </div>
 
-      {/* Main grid */}
+      {/* ── Main Grid ── */}
       <div className="mx-auto max-w-7xl px-6 pb-12 pt-4">
         <div className="grid gap-5 lg:grid-cols-[380px_1fr]">
 
@@ -1278,7 +840,7 @@ export default function Page() {
                 <span className="text-xs font-medium text-stone-600">
                   {uploadedRoomImage ? "✓ Image uploaded — click to replace" : "Click to upload room photo"}
                 </span>
-                <span className="text-[10px] text-stone-400">PNG, JPG, WEBP</span>
+                <span className="text-[10px] text-stone-400">PNG, JPG, WEBP — max 10MB</span>
                 <input
                   type="file"
                   accept="image/png,image/jpeg,image/jpg,image/webp"
@@ -1289,90 +851,37 @@ export default function Page() {
               {uploading && <p className="mt-2 text-center text-xs text-stone-400 animate-pulse">Optimising image…</p>}
             </div>
 
-            {/* Room Type — auto-detected, shown only when needed */}
-            {uploadedRoomImage && (
-              <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-                <StepBadge n={2} label="Room Type" />
-
-                {/* Detecting state */}
-                {detectingRoomType && (
-                  <div className="flex items-center gap-2 rounded-xl bg-stone-50 px-4 py-3 text-xs text-stone-500">
-                    <span className="animate-spin">⏳</span>
-                    <span>Detecting room type from your photo…</span>
-                  </div>
-                )}
-
-                {/* Successfully detected — show with override option */}
-                {!detectingRoomType && roomType && !roomTypeDetectionFailed && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5">
-                      <span className="text-base">{ROOM_TYPE_OPTIONS.find((r) => r.value === roomType)?.icon}</span>
-                      <span className="text-xs font-semibold text-emerald-800">
-                        {formatRoomTypeLabel(roomType)} detected
-                      </span>
-                      <span className="ml-auto text-emerald-500 text-xs">✓</span>
-                    </div>
-                    <p className="text-[11px] text-stone-400 text-center">Not right? Select manually:</p>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
-                      {ROOM_TYPE_OPTIONS.map((option) => {
-                        const selected = roomType === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setRoomType(option.value)}
-                            className={[
-                              "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
-                              selected
-                                ? "border-stone-900 bg-stone-900 text-white"
-                                : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
-                            ].join(" ")}
-                          >
-                            <span className="text-base">{option.icon}</span>
-                            <span>{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Detection failed — show manual selection */}
-                {!detectingRoomType && roomTypeDetectionFailed && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800">
-                      <span>⚠️</span>
-                      <span>Couldn't detect room type — please select one below</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
-                      {ROOM_TYPE_OPTIONS.map((option) => {
-                        const selected = roomType === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setRoomType(option.value)}
-                            className={[
-                              "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
-                              selected
-                                ? "border-stone-900 bg-stone-900 text-white"
-                                : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
-                            ].join(" ")}
-                          >
-                            <span className="text-base">{option.icon}</span>
-                            <span>{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Design Style */}
+            {/* Room Type */}
             <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-              <StepBadge n={2} label="Design Style" />
+              <StepBadge n={2} label="Room Type" />
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
+                {ROOM_TYPE_OPTIONS.map((option) => {
+                  const selected = roomType === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setRoomType(option.value)}
+                      className={[
+                        "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
+                        selected
+                          ? "border-stone-900 bg-stone-900 text-white"
+                          : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
+                      ].join(" ")}
+                    >
+                      <span className="text-base">{option.icon}</span>
+                      <span>{option.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Design Requirement */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <StepBadge n={3} label="Design Style" />
+
+              {/* Style Presets */}
               <div className="flex flex-wrap gap-1.5">
                 {STYLE_PRESETS.map((preset) => {
                   const presetTheme = getPresetTheme(preset, roomType);
@@ -1385,7 +894,9 @@ export default function Page() {
                       style={isActive ? { backgroundColor: preset.color, borderColor: preset.color, color: "#fff" } : {}}
                       className={[
                         "rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
-                        isActive ? "" : "border-stone-200 bg-stone-50 text-stone-600 hover:border-stone-400 hover:bg-stone-100",
+                        isActive
+                          ? ""
+                          : "border-stone-200 bg-stone-50 text-stone-600 hover:border-stone-400 hover:bg-stone-100",
                       ].join(" ")}
                     >
                       {preset.emoji} {preset.label}
@@ -1393,6 +904,7 @@ export default function Page() {
                   );
                 })}
               </div>
+
               <textarea
                 value={theme}
                 onChange={(e) => setTheme(e.target.value)}
@@ -1400,7 +912,8 @@ export default function Page() {
                 className="mt-3 w-full resize-none rounded-xl border border-stone-200 bg-stone-50 px-3 py-2.5 text-xs leading-relaxed text-stone-800 outline-none placeholder:text-stone-400 focus:border-stone-400 focus:bg-white transition"
                 placeholder="Describe your desired style, or edit the preset above…"
               />
-              {/* Budget Filter */}
+
+              {/* Budget Filter (B1.1) */}
               <div className="mt-3 rounded-xl border border-stone-200 bg-stone-50 p-3">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-stone-500">💰 Budget Filter</span>
@@ -1418,47 +931,90 @@ export default function Page() {
                   <div className="relative flex-1">
                     <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[11px] text-stone-400">$</span>
                     <input
-                      type="number" min={0} placeholder="Min" value={minPrice ?? ""}
+                      type="number"
+                      min={0}
+                      placeholder="Min"
+                      value={minPrice ?? ""}
                       onChange={(e) => setMinPrice(e.target.value === "" ? null : Number(e.target.value))}
                       className="w-full rounded-lg border border-stone-200 bg-white py-1.5 pl-6 pr-2 text-xs outline-none focus:border-stone-400"
                     />
                   </div>
-                  <span className="text-stone-300">—</span>
+                  <span className="text-stone-300 text-sm">—</span>
                   <div className="relative flex-1">
                     <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[11px] text-stone-400">$</span>
                     <input
-                      type="number" min={0} placeholder="Max" value={maxPrice ?? ""}
+                      type="number"
+                      min={0}
+                      placeholder="Max"
+                      value={maxPrice ?? ""}
                       onChange={(e) => setMaxPrice(e.target.value === "" ? null : Number(e.target.value))}
                       className="w-full rounded-lg border border-stone-200 bg-white py-1.5 pl-6 pr-2 text-xs outline-none focus:border-stone-400"
                     />
                   </div>
                 </div>
-                {priceInvalid && <p className="mt-1.5 text-[10px] text-red-500">Min price cannot exceed max price.</p>}
+                {priceInvalid && (
+                  <p className="mt-1.5 text-[10px] text-red-500">Min price cannot exceed max price.</p>
+                )}
               </div>
             </div>
 
             {/* Actions */}
             <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm space-y-2.5">
-              <StepBadge n={3} label="Actions" />
-              <ActionButton onClick={() => void handleCleanRoom()} disabled={!canClean} loading={cleaning} elapsed={cleanElapsed} label="Clean Room" loadingLabel="Cleaning room…" icon="🧹" variant="default" />
-              {cleaningStatus && !cleaning && <p className="text-center text-xs text-stone-400">{cleaningStatus}</p>}
-              <ActionButton onClick={() => void handleRetrieveCatalogue()} disabled={!canRetrieve} loading={retrieving} elapsed={retrieveElapsed} label="Find Matching Products" loadingLabel="Searching catalogue…" icon="🔍" variant="outline" />
-              <ActionButton onClick={() => void handleGeneratePipeline()} disabled={!canGenerate || priceInvalid} loading={pipelineRunning} elapsed={pipelineElapsed} label={generatedRoomImage ? "Regenerate Room" : "Generate AI Room"} loadingLabel={pipelineStatus ?? "Working…"} icon="✨" variant="primary" />
-              {pipelineStatus && !pipelineRunning && <p className="text-center text-xs text-stone-400">{pipelineStatus}</p>}
+              <StepBadge n={4} label="Actions" />
+
+              <ActionButton
+                onClick={() => void handleCleanRoom()}
+                disabled={!canClean}
+                loading={cleaning}
+                elapsed={cleanElapsed}
+                label="Clean Room"
+                loadingLabel="Cleaning room…"
+                icon="🧹"
+                variant="default"
+              />
+              {cleaningStatus && !cleaning && (
+                <p className="text-center text-xs text-stone-400">{cleaningStatus}</p>
+              )}
+
+              <ActionButton
+                onClick={() => void handleRetrieveCatalogue()}
+                disabled={!canRetrieve}
+                loading={retrieving}
+                elapsed={retrieveElapsed}
+                label="Find Matching Products"
+                loadingLabel="Searching catalogue…"
+                icon="🔍"
+                variant="outline"
+              />
+
+              <ActionButton
+                onClick={() => void handleGeneratePipeline()}
+                disabled={!canGenerate || priceInvalid}
+                loading={pipelineRunning}
+                elapsed={pipelineElapsed}
+                label={generatedRoomImage ? "Regenerate Room" : "Generate AI Room"}
+                loadingLabel={pipelineStatus ?? "Working…"}
+                icon="✨"
+                variant="primary"
+              />
+
+              {pipelineStatus && !pipelineRunning && (
+                <p className="text-center text-xs text-stone-400">{pipelineStatus}</p>
+              )}
             </div>
 
             {/* Status summary */}
             <div className="rounded-2xl border border-stone-100 bg-white p-4 text-[11px] text-stone-500 space-y-1.5">
-              {([
-                ["Room type", detectingRoomType ? "Detecting…" : roomType ? formatRoomTypeLabel(roomType) : "—"],
+              {[
+                ["Room type", roomType ? formatRoomTypeLabel(roomType) : "—"],
                 ["Image", uploadedRoomImage ? "✓ Uploaded" : "—"],
                 ["Room cleaned", cleanedRoomImage ? "✓ Ready" : "—"],
                 ["Products found", String(visibleDisplayedProducts.length + visiblePinnedProducts.length)],
                 ["Room generated", generatedRoomImage ? "✓ Done" : "—"],
-              ] as [string, string][]).map(([k, v]) => (
+              ].map(([k, v]) => (
                 <div key={k} className="flex items-center justify-between">
                   <span className="text-stone-400">{k}</span>
-                  <span className={`font-medium ${v.startsWith("✓") ? "text-emerald-600" : "text-stone-700"}`}>{v}</span>
+                  <span className={`font-medium ${v?.startsWith("✓") ? "text-emerald-600" : "text-stone-700"}`}>{v}</span>
                 </div>
               ))}
             </div>
@@ -1469,44 +1025,27 @@ export default function Page() {
 
             {/* Room images */}
             <div className="grid gap-4 sm:grid-cols-2">
-              <ImagePanel title="Uploaded Room" image={uploadedRoomImage} emptyText="Upload a room photo to get started" />
-              <div>
-                <ImagePanel
-                  title="AI Generated Room"
-                  image={generatedRoomImage}
-                  emptyText="Your AI redesign will appear here"
-                  badge={generatedRoomImage ? "Ready" : undefined}
-                  onDownload={generatedRoomImage ? handleDownload : undefined}
-                  onShopFurnishings={generatedRoomImage ? handleShopFurnishings : undefined}
-                  shopFurnishingsLoading={shopFurnishingsLoading}
-                />
-                {/* Out-of-stock notice — shown below the image after Shop Furnishings */}
-                {unavailableProductTitles.length > 0 && (
-                  <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                    <p className="text-xs font-semibold text-amber-800">
-                      {unavailableProductTitles.length === 1
-                        ? "1 product couldn't be added to cart (sold out or unavailable):"
-                        : `${unavailableProductTitles.length} products couldn't be added to cart (sold out or unavailable):`}
-                    </p>
-                    <ul className="mt-1.5 space-y-0.5">
-                      {unavailableProductTitles.map((title) => (
-                        <li key={title} className="flex items-center gap-1.5 text-xs text-amber-700">
-                          <span className="text-amber-500">•</span>
-                          <span className="line-clamp-1">{title}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+              <ImagePanel
+                title="Uploaded Room"
+                image={uploadedRoomImage}
+                emptyText="Upload a room photo to get started"
+              />
+              <ImagePanel
+                title="AI Generated Room"
+                image={generatedRoomImage}
+                emptyText="Your AI redesign will appear here"
+                badge={generatedRoomImage ? "Ready" : undefined}
+              />
             </div>
 
             {/* Products */}
-            <div id="products-section" className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
               <div className="mb-5 flex items-start justify-between gap-4">
                 <div>
                   <h2 className="text-sm font-bold uppercase tracking-widest text-stone-700">Recommended Products</h2>
-                  <p className="mt-0.5 text-xs text-stone-400">Products matched to your room and style</p>
+                  <p className="mt-0.5 text-xs text-stone-400">
+                    Products matched to your room and style
+                  </p>
                 </div>
                 {generatedRoomImage && (
                   <button
@@ -1551,20 +1090,13 @@ export default function Page() {
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         {catalogPinnedProducts.slice(0, 6).map((item) => (
-                          <ProductCard
-                            key={`pinned-${item.product_handle}`}
-                            item={item} pinned
-                            onImageError={() => markBrokenImage(item.product_handle)}
-                            onAddToWishlist={handleAddToWishlist}
-                            isInWishlist={wishlist.some((w) => w.product_handle === item.product_handle)}
-                            onOpenModal={setModalProduct}
-                          />
+                          <ProductCard key={`pinned-${item.product_handle}`} item={item} pinned onImageError={() => markBrokenImage(item.product_handle)} />
                         ))}
                       </div>
                     </div>
                   )}
 
-                  {/* AI Discoveries */}
+                  {/* Innovation */}
                   {innovativePinnedProducts.length > 0 && (
                     <div>
                       <div className="mb-3 flex items-center gap-2">
@@ -1576,20 +1108,13 @@ export default function Page() {
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         {innovativePinnedProducts.map((item) => (
-                          <ProductCard
-                            key={`innovative-${item.product_handle}`}
-                            item={item} pinned
-                            onImageError={() => markBrokenImage(item.product_handle)}
-                            onAddToWishlist={handleAddToWishlist}
-                            isInWishlist={wishlist.some((w) => w.product_handle === item.product_handle)}
-                            onOpenModal={setModalProduct}
-                          />
+                          <ProductCard key={`innovative-${item.product_handle}`} item={item} pinned onImageError={() => markBrokenImage(item.product_handle)} />
                         ))}
                       </div>
                     </div>
                   )}
 
-                  {/* More Matches */}
+                  {/* More products */}
                   {visibleDisplayedProducts.length > 0 && (
                     <div>
                       <div className="mb-3 flex items-center gap-2">
@@ -1601,14 +1126,7 @@ export default function Page() {
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         {visibleDisplayedProducts.map((item) => (
-                          <ProductCard
-                            key={item.product_handle}
-                            item={item}
-                            onImageError={() => markBrokenImage(item.product_handle)}
-                            onAddToWishlist={handleAddToWishlist}
-                            isInWishlist={wishlist.some((w) => w.product_handle === item.product_handle)}
-                            onOpenModal={setModalProduct}
-                          />
+                          <ProductCard key={item.product_handle} item={item} onImageError={() => markBrokenImage(item.product_handle)} />
                         ))}
                       </div>
                     </div>
@@ -1625,41 +1143,6 @@ export default function Page() {
           </section>
         </div>
       </div>
-
-      {/* Floating wishlist button */}
-      <button
-        type="button"
-        onClick={() => setWishlistOpen(true)}
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-stone-900 text-white shadow-xl transition hover:bg-stone-700 active:scale-95"
-      >
-        <span className="text-xl">🛒</span>
-        {wishlist.length > 0 && (
-          <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[10px] font-bold text-white">
-            {wishlist.length}
-          </span>
-        )}
-      </button>
-
-      {/* Wishlist panel */}
-      {wishlistOpen && (
-        <WishlistPanel
-          wishlist={wishlist}
-          onClose={() => setWishlistOpen(false)}
-          onRemove={handleRemoveFromWishlist}
-          onBuyAll={handleBuyAll}
-          onClear={() => setWishlist([])}
-        />
-      )}
-
-      {/* Immersive product modal */}
-      {modalProduct && (
-        <ProductModal
-          product={modalProduct}
-          isInWishlist={wishlist.some((w) => w.product_handle === modalProduct.product_handle)}
-          onClose={() => setModalProduct(null)}
-          onAddToWishlist={handleAddToWishlist}
-        />
-      )}
     </main>
   );
 }

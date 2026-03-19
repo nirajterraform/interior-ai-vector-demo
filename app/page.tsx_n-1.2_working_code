@@ -843,16 +843,12 @@ export default function Page() {
   const [wishlist, setWishlist] = useState<WishlistItem[]>([]);
   const [wishlistOpen, setWishlistOpen] = useState(false);
   const [shopFurnishingsLoading, setShopFurnishingsLoading] = useState(false);
-  // Titles of in-room products that couldn't be added to cart
-  const [unavailableProductTitles, setUnavailableProductTitles] = useState<string[]>([]);
 
   // Modal
   const [modalProduct, setModalProduct] = useState<RetrievedProduct | null>(null);
 
   // Loading
   const [uploading, setUploading] = useState(false);
-  const [detectingRoomType, setDetectingRoomType] = useState(false);
-  const [roomTypeDetectionFailed, setRoomTypeDetectionFailed] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [retrieving, setRetrieving] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -907,56 +903,60 @@ export default function Page() {
   }
 
   async function handleShopFurnishings() {
-    // No pinned products yet — just scroll down
+    // If no catalogue products are pinned yet, just scroll to the products section
     if (catalogPinnedProducts.length === 0) {
       document.getElementById("products-section")?.scrollIntoView({ behavior: "smooth" });
       return;
     }
 
+    // Single item — go straight to product page
+    if (catalogPinnedProducts.length === 1) {
+      window.open(`https://prhomz.com/products/${catalogPinnedProducts[0].product_handle}`, "_blank");
+      return;
+    }
+
     try {
       setShopFurnishingsLoading(true);
-      setUnavailableProductTitles([]);
 
-      // Fetch default variant ID for every in-room catalogue product in parallel
-      const results = await Promise.all(
+      // Fetch default variant ID for each pinned catalogue product in parallel
+      const variantResults = await Promise.all(
         catalogPinnedProducts.map(async (item) => {
           try {
             const res = await fetch(
               `https://prhomz.com/products/${item.product_handle}.json`,
               { headers: { Accept: "application/json" } }
             );
-            if (!res.ok) return { title: item.title, variantId: null };
+            if (!res.ok) return null;
             const data = await res.json();
             const variantId = data?.product?.variants?.[0]?.id;
-            return {
-              title: item.title,
-              variantId: variantId ? String(variantId) : null,
-            };
+            return variantId ? String(variantId) : null;
           } catch {
-            return { title: item.title, variantId: null };
+            return null;
           }
         })
       );
 
-      // Products where we got a variant ID go into the cart
-      const cartItems  = results.filter((r) => r.variantId !== null);
-      // Products where we failed (sold out, removed, error) get noted
-      const unavailable = results.filter((r) => r.variantId === null);
+      // Build bulk cart URL from successfully fetched variant IDs
+      const cartParts = variantResults
+        .filter((id): id is string => id !== null)
+        .map((id) => `${id}:1`);
 
-      // Show notice for unavailable products
-      if (unavailable.length > 0) {
-        setUnavailableProductTitles(unavailable.map((r) => r.title));
-      }
-
-      // Open one cart tab with all available items — no extra tabs
-      if (cartItems.length > 0) {
-        const cartParts = cartItems.map((r) => `${r.variantId}:1`);
+      if (cartParts.length > 0) {
         window.open(`https://prhomz.com/cart/${cartParts.join(",")}`, "_blank");
       }
 
+      // Fall back to individual product pages for any failed fetches
+      variantResults.forEach((id, idx) => {
+        if (id === null) {
+          window.open(`https://prhomz.com/products/${catalogPinnedProducts[idx].product_handle}`, "_blank");
+        }
+      });
+
     } catch {
-      // Full fallback — just scroll to products
-      document.getElementById("products-section")?.scrollIntoView({ behavior: "smooth" });
+      // Full fallback — open each product page individually
+      catalogPinnedProducts.forEach((item) => {
+        window.open(`https://prhomz.com/products/${item.product_handle}`, "_blank");
+      });
     } finally {
       setShopFurnishingsLoading(false);
     }
@@ -994,7 +994,6 @@ export default function Page() {
     if (!file) return;
     try {
       setError(null); setWarning(null); setUploading(true);
-      setRoomTypeDetectionFailed(false);
       const dataUrl = await resizeImageToDataUrl(file, 768, 0.82);
       setUploadedRoomImage(dataUrl);
       setCleanedRoomImage(null); setGeneratedRoomImage(null);
@@ -1002,38 +1001,10 @@ export default function Page() {
       setSceneState(null); setLastEditPlan(null);
       setSeenHandles([]); setRotationCursor(0); setBrokenImageHandles([]);
       setCleaningStatus(null); setPipelineStatus(null);
-      setRoomType(null);
-
-      // Auto-detect room type in background after upload
-      void detectRoomTypeFromImage(dataUrl);
     } catch {
       setError("Failed to read the uploaded image.");
     } finally {
       setUploading(false);
-    }
-  }
-
-  async function detectRoomTypeFromImage(imageBase64: string) {
-    try {
-      setDetectingRoomType(true);
-      const mimeType = getMimeTypeFromDataUrl(imageBase64);
-      const res = await fetch("/api/detect-room-type", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, mimeType }),
-      });
-      const data = await res.json();
-      if (data?.ok && data?.roomType) {
-        setRoomType(data.roomType as RoomType);
-        setRoomTypeDetectionFailed(false);
-      } else {
-        // Detection failed or returned unknown type — show fallback buttons
-        setRoomTypeDetectionFailed(true);
-      }
-    } catch {
-      setRoomTypeDetectionFailed(true);
-    } finally {
-      setDetectingRoomType(false);
     }
   }
 
@@ -1213,8 +1184,8 @@ export default function Page() {
   }
 
   const canClean    = !!uploadedRoomImage && !cleaning && !pipelineRunning;
-  const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning && !detectingRoomType;
-  const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning && !detectingRoomType;
+  const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning;
+  const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning;
   const priceInvalid = minPrice !== null && maxPrice !== null && minPrice > maxPrice;
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -1289,90 +1260,35 @@ export default function Page() {
               {uploading && <p className="mt-2 text-center text-xs text-stone-400 animate-pulse">Optimising image…</p>}
             </div>
 
-            {/* Room Type — auto-detected, shown only when needed */}
-            {uploadedRoomImage && (
-              <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-                <StepBadge n={2} label="Room Type" />
-
-                {/* Detecting state */}
-                {detectingRoomType && (
-                  <div className="flex items-center gap-2 rounded-xl bg-stone-50 px-4 py-3 text-xs text-stone-500">
-                    <span className="animate-spin">⏳</span>
-                    <span>Detecting room type from your photo…</span>
-                  </div>
-                )}
-
-                {/* Successfully detected — show with override option */}
-                {!detectingRoomType && roomType && !roomTypeDetectionFailed && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5">
-                      <span className="text-base">{ROOM_TYPE_OPTIONS.find((r) => r.value === roomType)?.icon}</span>
-                      <span className="text-xs font-semibold text-emerald-800">
-                        {formatRoomTypeLabel(roomType)} detected
-                      </span>
-                      <span className="ml-auto text-emerald-500 text-xs">✓</span>
-                    </div>
-                    <p className="text-[11px] text-stone-400 text-center">Not right? Select manually:</p>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
-                      {ROOM_TYPE_OPTIONS.map((option) => {
-                        const selected = roomType === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setRoomType(option.value)}
-                            className={[
-                              "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
-                              selected
-                                ? "border-stone-900 bg-stone-900 text-white"
-                                : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
-                            ].join(" ")}
-                          >
-                            <span className="text-base">{option.icon}</span>
-                            <span>{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Detection failed — show manual selection */}
-                {!detectingRoomType && roomTypeDetectionFailed && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800">
-                      <span>⚠️</span>
-                      <span>Couldn't detect room type — please select one below</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
-                      {ROOM_TYPE_OPTIONS.map((option) => {
-                        const selected = roomType === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setRoomType(option.value)}
-                            className={[
-                              "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
-                              selected
-                                ? "border-stone-900 bg-stone-900 text-white"
-                                : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
-                            ].join(" ")}
-                          >
-                            <span className="text-base">{option.icon}</span>
-                            <span>{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+            {/* Room Type */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <StepBadge n={2} label="Room Type" />
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
+                {ROOM_TYPE_OPTIONS.map((option) => {
+                  const selected = roomType === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setRoomType(option.value)}
+                      className={[
+                        "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
+                        selected
+                          ? "border-stone-900 bg-stone-900 text-white"
+                          : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
+                      ].join(" ")}
+                    >
+                      <span className="text-base">{option.icon}</span>
+                      <span>{option.label}</span>
+                    </button>
+                  );
+                })}
               </div>
-            )}
+            </div>
 
             {/* Design Style */}
             <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-              <StepBadge n={2} label="Design Style" />
+              <StepBadge n={3} label="Design Style" />
               <div className="flex flex-wrap gap-1.5">
                 {STYLE_PRESETS.map((preset) => {
                   const presetTheme = getPresetTheme(preset, roomType);
@@ -1439,7 +1355,7 @@ export default function Page() {
 
             {/* Actions */}
             <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm space-y-2.5">
-              <StepBadge n={3} label="Actions" />
+              <StepBadge n={4} label="Actions" />
               <ActionButton onClick={() => void handleCleanRoom()} disabled={!canClean} loading={cleaning} elapsed={cleanElapsed} label="Clean Room" loadingLabel="Cleaning room…" icon="🧹" variant="default" />
               {cleaningStatus && !cleaning && <p className="text-center text-xs text-stone-400">{cleaningStatus}</p>}
               <ActionButton onClick={() => void handleRetrieveCatalogue()} disabled={!canRetrieve} loading={retrieving} elapsed={retrieveElapsed} label="Find Matching Products" loadingLabel="Searching catalogue…" icon="🔍" variant="outline" />
@@ -1450,7 +1366,7 @@ export default function Page() {
             {/* Status summary */}
             <div className="rounded-2xl border border-stone-100 bg-white p-4 text-[11px] text-stone-500 space-y-1.5">
               {([
-                ["Room type", detectingRoomType ? "Detecting…" : roomType ? formatRoomTypeLabel(roomType) : "—"],
+                ["Room type", roomType ? formatRoomTypeLabel(roomType) : "—"],
                 ["Image", uploadedRoomImage ? "✓ Uploaded" : "—"],
                 ["Room cleaned", cleanedRoomImage ? "✓ Ready" : "—"],
                 ["Products found", String(visibleDisplayedProducts.length + visiblePinnedProducts.length)],
@@ -1470,35 +1386,15 @@ export default function Page() {
             {/* Room images */}
             <div className="grid gap-4 sm:grid-cols-2">
               <ImagePanel title="Uploaded Room" image={uploadedRoomImage} emptyText="Upload a room photo to get started" />
-              <div>
-                <ImagePanel
-                  title="AI Generated Room"
-                  image={generatedRoomImage}
-                  emptyText="Your AI redesign will appear here"
-                  badge={generatedRoomImage ? "Ready" : undefined}
-                  onDownload={generatedRoomImage ? handleDownload : undefined}
-                  onShopFurnishings={generatedRoomImage ? handleShopFurnishings : undefined}
-                  shopFurnishingsLoading={shopFurnishingsLoading}
-                />
-                {/* Out-of-stock notice — shown below the image after Shop Furnishings */}
-                {unavailableProductTitles.length > 0 && (
-                  <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                    <p className="text-xs font-semibold text-amber-800">
-                      {unavailableProductTitles.length === 1
-                        ? "1 product couldn't be added to cart (sold out or unavailable):"
-                        : `${unavailableProductTitles.length} products couldn't be added to cart (sold out or unavailable):`}
-                    </p>
-                    <ul className="mt-1.5 space-y-0.5">
-                      {unavailableProductTitles.map((title) => (
-                        <li key={title} className="flex items-center gap-1.5 text-xs text-amber-700">
-                          <span className="text-amber-500">•</span>
-                          <span className="line-clamp-1">{title}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+              <ImagePanel
+                title="AI Generated Room"
+                image={generatedRoomImage}
+                emptyText="Your AI redesign will appear here"
+                badge={generatedRoomImage ? "Ready" : undefined}
+                onDownload={generatedRoomImage ? handleDownload : undefined}
+                onShopFurnishings={generatedRoomImage ? handleShopFurnishings : undefined}
+                shopFurnishingsLoading={shopFurnishingsLoading}
+              />
             </div>
 
             {/* Products */}

@@ -381,6 +381,7 @@ function ProductCard({
   onAddToWishlist,
   isInWishlist = false,
   onOpenModal,
+  isOutOfStock = false,
 }: {
   item: RetrievedProduct;
   pinned?: boolean;
@@ -388,13 +389,19 @@ function ProductCard({
   onAddToWishlist?: (item: RetrievedProduct) => void;
   isInWishlist?: boolean;
   onOpenModal?: (item: RetrievedProduct) => void;
+  isOutOfStock?: boolean;
 }) {
   const label = priceLabel(item);
   const isInnovative = item.source === "innovative";
 
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm transition hover:shadow-md cursor-pointer"
+      className={[
+        "group relative overflow-hidden rounded-2xl border bg-white shadow-sm transition cursor-pointer",
+        isOutOfStock
+          ? "border-stone-200 opacity-60"
+          : "border-stone-200 hover:shadow-md",
+      ].join(" ")}
       onDoubleClick={() => onOpenModal?.(item)}
     >
       {/* Image */}
@@ -403,14 +410,30 @@ function ProductCard({
           <img
             src={item.image_url}
             alt={item.title}
-            className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+            className={[
+              "h-full w-full object-cover transition duration-300",
+              isOutOfStock ? "grayscale" : "group-hover:scale-105",
+            ].join(" ")}
             onError={() => onImageError?.()}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-xs text-stone-400">No image</div>
         )}
-        {pinned && !isInnovative && (
+        {/* Out of stock overlay */}
+        {isOutOfStock && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+            <span className="rounded-full bg-white/90 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-stone-700 shadow">
+              Out of Stock
+            </span>
+          </div>
+        )}
+        {!isOutOfStock && pinned && !isInnovative && (
           <span className="absolute left-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
+            In Room
+          </span>
+        )}
+        {isOutOfStock && pinned && !isInnovative && (
+          <span className="absolute left-2 top-2 rounded-full bg-stone-500 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white shadow">
             In Room
           </span>
         )}
@@ -419,12 +442,14 @@ function ProductCard({
             AI Pick
           </span>
         )}
-        {/* Hover hint */}
-        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/10">
-          <span className="scale-75 rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-medium text-stone-700 opacity-0 shadow transition group-hover:scale-100 group-hover:opacity-100">
-            Double-click to expand
-          </span>
-        </div>
+        {/* Hover hint — only when in stock */}
+        {!isOutOfStock && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/10">
+            <span className="scale-75 rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-medium text-stone-700 opacity-0 shadow transition group-hover:scale-100 group-hover:opacity-100">
+              Double-click to expand
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Body */}
@@ -433,10 +458,18 @@ function ProductCard({
         <p className="mt-1 text-[10px] uppercase tracking-wide text-stone-400">
           {item.normalized_category || item.category || "—"}
         </p>
-        {label && <p className="mt-1.5 text-xs font-semibold text-stone-700">{label}</p>}
+        {label && (
+          <p className={[
+            "mt-1.5 text-xs font-semibold",
+            isOutOfStock ? "text-stone-400 line-through" : "text-stone-700",
+          ].join(" ")}>
+            {label}
+          </p>
+        )}
 
         {/* Actions */}
         <div className="mt-3 flex items-center gap-2">
+          {/* Save — always available */}
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onAddToWishlist?.(item); }}
@@ -450,8 +483,8 @@ function ProductCard({
             {isInWishlist ? "✓ Saved" : "🛒 Save"}
           </button>
 
-          {/* Buy — catalogue products only, not AI discoveries */}
-          {!isInnovative && (
+          {/* Buy — catalogue only, not AI discoveries, not out of stock */}
+          {!isInnovative && !isOutOfStock && (
             <a
               href={`https://prhomz.com/products/${item.product_handle}`}
               target="_blank"
@@ -461,6 +494,13 @@ function ProductCard({
             >
               Buy
             </a>
+          )}
+
+          {/* Out of stock label — replaces Buy button */}
+          {!isInnovative && isOutOfStock && (
+            <span className="flex flex-1 items-center justify-center rounded-lg border border-stone-200 bg-stone-50 py-1.5 text-[11px] font-medium text-stone-400">
+              Out of Stock
+            </span>
           )}
         </div>
       </div>
@@ -851,8 +891,6 @@ export default function Page() {
 
   // Loading
   const [uploading, setUploading] = useState(false);
-  const [detectingRoomType, setDetectingRoomType] = useState(false);
-  const [roomTypeDetectionFailed, setRoomTypeDetectionFailed] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [retrieving, setRetrieving] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -994,7 +1032,6 @@ export default function Page() {
     if (!file) return;
     try {
       setError(null); setWarning(null); setUploading(true);
-      setRoomTypeDetectionFailed(false);
       const dataUrl = await resizeImageToDataUrl(file, 768, 0.82);
       setUploadedRoomImage(dataUrl);
       setCleanedRoomImage(null); setGeneratedRoomImage(null);
@@ -1002,38 +1039,10 @@ export default function Page() {
       setSceneState(null); setLastEditPlan(null);
       setSeenHandles([]); setRotationCursor(0); setBrokenImageHandles([]);
       setCleaningStatus(null); setPipelineStatus(null);
-      setRoomType(null);
-
-      // Auto-detect room type in background after upload
-      void detectRoomTypeFromImage(dataUrl);
     } catch {
       setError("Failed to read the uploaded image.");
     } finally {
       setUploading(false);
-    }
-  }
-
-  async function detectRoomTypeFromImage(imageBase64: string) {
-    try {
-      setDetectingRoomType(true);
-      const mimeType = getMimeTypeFromDataUrl(imageBase64);
-      const res = await fetch("/api/detect-room-type", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, mimeType }),
-      });
-      const data = await res.json();
-      if (data?.ok && data?.roomType) {
-        setRoomType(data.roomType as RoomType);
-        setRoomTypeDetectionFailed(false);
-      } else {
-        // Detection failed or returned unknown type — show fallback buttons
-        setRoomTypeDetectionFailed(true);
-      }
-    } catch {
-      setRoomTypeDetectionFailed(true);
-    } finally {
-      setDetectingRoomType(false);
     }
   }
 
@@ -1213,8 +1222,8 @@ export default function Page() {
   }
 
   const canClean    = !!uploadedRoomImage && !cleaning && !pipelineRunning;
-  const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning && !detectingRoomType;
-  const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning && !detectingRoomType;
+  const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning;
+  const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning;
   const priceInvalid = minPrice !== null && maxPrice !== null && minPrice > maxPrice;
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -1289,90 +1298,35 @@ export default function Page() {
               {uploading && <p className="mt-2 text-center text-xs text-stone-400 animate-pulse">Optimising image…</p>}
             </div>
 
-            {/* Room Type — auto-detected, shown only when needed */}
-            {uploadedRoomImage && (
-              <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-                <StepBadge n={2} label="Room Type" />
-
-                {/* Detecting state */}
-                {detectingRoomType && (
-                  <div className="flex items-center gap-2 rounded-xl bg-stone-50 px-4 py-3 text-xs text-stone-500">
-                    <span className="animate-spin">⏳</span>
-                    <span>Detecting room type from your photo…</span>
-                  </div>
-                )}
-
-                {/* Successfully detected — show with override option */}
-                {!detectingRoomType && roomType && !roomTypeDetectionFailed && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5">
-                      <span className="text-base">{ROOM_TYPE_OPTIONS.find((r) => r.value === roomType)?.icon}</span>
-                      <span className="text-xs font-semibold text-emerald-800">
-                        {formatRoomTypeLabel(roomType)} detected
-                      </span>
-                      <span className="ml-auto text-emerald-500 text-xs">✓</span>
-                    </div>
-                    <p className="text-[11px] text-stone-400 text-center">Not right? Select manually:</p>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
-                      {ROOM_TYPE_OPTIONS.map((option) => {
-                        const selected = roomType === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setRoomType(option.value)}
-                            className={[
-                              "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
-                              selected
-                                ? "border-stone-900 bg-stone-900 text-white"
-                                : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
-                            ].join(" ")}
-                          >
-                            <span className="text-base">{option.icon}</span>
-                            <span>{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Detection failed — show manual selection */}
-                {!detectingRoomType && roomTypeDetectionFailed && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800">
-                      <span>⚠️</span>
-                      <span>Couldn't detect room type — please select one below</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
-                      {ROOM_TYPE_OPTIONS.map((option) => {
-                        const selected = roomType === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setRoomType(option.value)}
-                            className={[
-                              "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
-                              selected
-                                ? "border-stone-900 bg-stone-900 text-white"
-                                : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
-                            ].join(" ")}
-                          >
-                            <span className="text-base">{option.icon}</span>
-                            <span>{option.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+            {/* Room Type */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <StepBadge n={2} label="Room Type" />
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
+                {ROOM_TYPE_OPTIONS.map((option) => {
+                  const selected = roomType === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setRoomType(option.value)}
+                      className={[
+                        "flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center text-xs font-medium transition",
+                        selected
+                          ? "border-stone-900 bg-stone-900 text-white"
+                          : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-400 hover:bg-stone-100",
+                      ].join(" ")}
+                    >
+                      <span className="text-base">{option.icon}</span>
+                      <span>{option.label}</span>
+                    </button>
+                  );
+                })}
               </div>
-            )}
+            </div>
 
             {/* Design Style */}
             <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-              <StepBadge n={2} label="Design Style" />
+              <StepBadge n={3} label="Design Style" />
               <div className="flex flex-wrap gap-1.5">
                 {STYLE_PRESETS.map((preset) => {
                   const presetTheme = getPresetTheme(preset, roomType);
@@ -1439,7 +1393,7 @@ export default function Page() {
 
             {/* Actions */}
             <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm space-y-2.5">
-              <StepBadge n={3} label="Actions" />
+              <StepBadge n={4} label="Actions" />
               <ActionButton onClick={() => void handleCleanRoom()} disabled={!canClean} loading={cleaning} elapsed={cleanElapsed} label="Clean Room" loadingLabel="Cleaning room…" icon="🧹" variant="default" />
               {cleaningStatus && !cleaning && <p className="text-center text-xs text-stone-400">{cleaningStatus}</p>}
               <ActionButton onClick={() => void handleRetrieveCatalogue()} disabled={!canRetrieve} loading={retrieving} elapsed={retrieveElapsed} label="Find Matching Products" loadingLabel="Searching catalogue…" icon="🔍" variant="outline" />
@@ -1450,7 +1404,7 @@ export default function Page() {
             {/* Status summary */}
             <div className="rounded-2xl border border-stone-100 bg-white p-4 text-[11px] text-stone-500 space-y-1.5">
               {([
-                ["Room type", detectingRoomType ? "Detecting…" : roomType ? formatRoomTypeLabel(roomType) : "—"],
+                ["Room type", roomType ? formatRoomTypeLabel(roomType) : "—"],
                 ["Image", uploadedRoomImage ? "✓ Uploaded" : "—"],
                 ["Room cleaned", cleanedRoomImage ? "✓ Ready" : "—"],
                 ["Products found", String(visibleDisplayedProducts.length + visiblePinnedProducts.length)],
@@ -1480,24 +1434,7 @@ export default function Page() {
                   onShopFurnishings={generatedRoomImage ? handleShopFurnishings : undefined}
                   shopFurnishingsLoading={shopFurnishingsLoading}
                 />
-                {/* Out-of-stock notice — shown below the image after Shop Furnishings */}
-                {unavailableProductTitles.length > 0 && (
-                  <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                    <p className="text-xs font-semibold text-amber-800">
-                      {unavailableProductTitles.length === 1
-                        ? "1 product couldn't be added to cart (sold out or unavailable):"
-                        : `${unavailableProductTitles.length} products couldn't be added to cart (sold out or unavailable):`}
-                    </p>
-                    <ul className="mt-1.5 space-y-0.5">
-                      {unavailableProductTitles.map((title) => (
-                        <li key={title} className="flex items-center gap-1.5 text-xs text-amber-700">
-                          <span className="text-amber-500">•</span>
-                          <span className="line-clamp-1">{title}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+
               </div>
             </div>
 
@@ -1558,6 +1495,7 @@ export default function Page() {
                             onAddToWishlist={handleAddToWishlist}
                             isInWishlist={wishlist.some((w) => w.product_handle === item.product_handle)}
                             onOpenModal={setModalProduct}
+                            isOutOfStock={unavailableProductTitles.includes(item.title)}
                           />
                         ))}
                       </div>
