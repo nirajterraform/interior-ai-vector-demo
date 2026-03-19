@@ -595,13 +595,13 @@ function mergePinnedProductsForRequirement(
     return !itemMatchesCategory(item, targetCategory);
   });
 
-  let mergedCatalog = dedupeShortlist([...keepPreviousCatalog, ...detectedCatalog]).map((item) => ({
+  let mergedCatalog: ShortlistItem[] = dedupeShortlist([...keepPreviousCatalog, ...detectedCatalog]).map((item) => ({
     ...item,
     pinned: true,
     source: "catalog" as const,
   }));
 
-  let mergedInnovation = dedupeShortlist([...keepPreviousInnovation, ...detectedInnovation]).map((item) => ({
+  let mergedInnovation: ShortlistItem[] = dedupeShortlist([...keepPreviousInnovation, ...detectedInnovation]).map((item) => ({
     ...item,
     pinned: true,
     source: "innovative" as const,
