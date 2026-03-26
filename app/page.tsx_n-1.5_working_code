@@ -1017,27 +1017,17 @@ export default function Page() {
     try {
       setDetectingRoomType(true);
       const mimeType = getMimeTypeFromDataUrl(imageBase64);
-      // 15 second timeout — if detection takes longer, show fallback buttons
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-      try {
-        const res = await fetch("/api/detect-room-type", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageBase64, mimeType }),
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        const data = await res.json();
-        if (data?.ok && data?.roomType) {
-          setRoomType(data.roomType as RoomType);
-          setRoomTypeDetectionFailed(false);
-        } else {
-          setRoomTypeDetectionFailed(true);
-        }
-      } catch {
-        clearTimeout(timeout);
-        // Timed out or failed — show fallback room type buttons immediately
+      const res = await fetch("/api/detect-room-type", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64, mimeType }),
+      });
+      const data = await res.json();
+      if (data?.ok && data?.roomType) {
+        setRoomType(data.roomType as RoomType);
+        setRoomTypeDetectionFailed(false);
+      } else {
+        // Detection failed or returned unknown type — show fallback buttons
         setRoomTypeDetectionFailed(true);
       }
     } catch {
@@ -1057,73 +1047,6 @@ export default function Page() {
     const data = await parseApiResponse(res);
     if (!res.ok || !data?.ok) throw new Error(getApiErrorMessage(res, data, "Failed to clean room."));
     return data as { ok: true; cleanedImage: string; retryUsed?: boolean; validationPassed?: boolean };
-  }
-
-  async function runRemoveFurniture(params: {
-    imageBase64: string;
-    roomType: string;
-  }) {
-    const res = await fetch("/api/remove-furniture", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    });
-    const data = await parseApiResponse(res);
-    if (!res.ok || !data?.ok) throw new Error(getApiErrorMessage(res, data, "Failed to remove furniture."));
-    return data as { ok: true; emptyRoomImage: string; originalImage: string };
-  }
-
-  async function runPlaceProducts(params: {
-    emptyRoomImage: string;
-    originalRoomImage: string;
-    products: Array<{ imageUrl: string; title: string; category: string }>;
-    theme: string;
-    roomType: string;
-    mimeType?: string;
-  }) {
-    const res = await fetch("/api/place-products", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    });
-    const data = await parseApiResponse(res);
-    if (!res.ok || !data?.ok) throw new Error(getApiErrorMessage(res, data, "Failed to place products."));
-    return data as { ok: true; generatedImage: string; productsPlaced: Array<{ title: string; category: string }> };
-  }
-
-  async function runInpaintRoom(params: {
-    imageBase64: string;
-    maskBase64?: string;
-    theme: string;
-    roomType: string;
-  }) {
-    const res = await fetch("/api/inpaint-room", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    });
-    const data = await parseApiResponse(res);
-    if (!res.ok || !data?.ok) throw new Error(getApiErrorMessage(res, data, "Failed to inpaint room."));
-    return data as { ok: true; generatedImage: string };
-  }
-
-  // After Imagen inpainting, ask Gemini to describe the visible furniture
-  // so we can re-query the catalogue with a visually-accurate description
-  async function runDescribeGeneratedRoom(imageBase64: string, roomType: string): Promise<string> {
-    const res = await fetch("/api/detect-room-type", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        imageBase64,
-        mimeType: getMimeTypeFromDataUrl(imageBase64),
-        describeMode: true,
-        roomType,
-      }),
-    });
-    // If this fails, fall back gracefully — not critical
-    if (!res.ok) return "";
-    const data = await parseApiResponse(res);
-    return data?.furnitureDescription || "";
   }
 
   async function runRetrieveCatalogue(params: {
@@ -1150,8 +1073,6 @@ export default function Page() {
     editMode?: boolean; baseGeneratedImage?: string | null;
     previousCatalogPinnedProducts?: RetrievedProduct[]; previousInnovationProducts?: RetrievedProduct[];
     editPlan?: EditPlan | null; sceneState?: SceneState | null;
-    detectionOnly?: boolean;
-    catalogueBlend?: boolean;
   }) {
     const mimeType = getMimeTypeFromDataUrl(params.cleanedRoomBase64);
     const res = await fetch("/api/generate-room", {
@@ -1165,8 +1086,6 @@ export default function Page() {
         previousCatalogPinnedProducts: params.previousCatalogPinnedProducts ?? [],
         previousInnovationProducts: params.previousInnovationProducts ?? [],
         editPlan: params.editPlan ?? null, sceneState: params.sceneState ?? null,
-        detectionOnly: params.detectionOnly ?? false,
-        catalogueBlend: params.catalogueBlend ?? false,
       }),
     });
     const data = await parseApiResponse(res);
@@ -1232,226 +1151,55 @@ export default function Page() {
     if (!theme.trim()) return setError("Please enter your design requirement.");
     try {
       setError(null); setWarning(null); setPipelineRunning(true);
-
-      const isInitialGeneration = !generatedRoomImage;
-
-      // ── Step 1: Retrieve catalogue products ───────────────────────────────
+      const needClean = !cleanedRoomImage;
       const retrievalMatchesCurrentRequest = retrievalResult &&
         retrievalResult.roomType === roomType && retrievalResult.theme === theme &&
         retrievalResult.shortlist?.length > 0;
+      const needRetrieval = !retrievalMatchesCurrentRequest;
+      let effectiveCleanedImage = cleanedRoomImage;
       let effectiveRetrieval = retrievalResult;
-      if (!retrievalMatchesCurrentRequest) {
-        setPipelineStatus("Finding matching products for your style…");
-        const retrieval = await runRetrieveCatalogue({
-          roomType, theme, seenHandles: [], rotationCursor: 0, pageSize: 12,
-        });
-        effectiveRetrieval = retrieval;
-        setRetrievalResult(retrieval);
-        setDisplayedProducts(dedupeProducts(retrieval.shortlist));
-        setSeenHandles(retrieval.shortlist.map((x) => x.product_handle));
-        setRotationCursor(retrieval.nextRotationCursor);
+
+      if (needClean || needRetrieval) {
+        setPipelineStatus(
+          needClean && needRetrieval ? "Cleaning room and retrieving products in parallel…" :
+          needClean ? "Removing furniture from room…" : "Finding matching products…"
+        );
+        const [cleanResult, retrieval] = await Promise.all([
+          needClean ? runCleanRoom(uploadedRoomImage) : Promise.resolve(null),
+          needRetrieval ? runRetrieveCatalogue({ roomType, theme, seenHandles: [], rotationCursor: 0, pageSize: 12 }) : Promise.resolve(null),
+        ]);
+        if (cleanResult) { effectiveCleanedImage = cleanResult.cleanedImage; setCleanedRoomImage(cleanResult.cleanedImage); }
+        if (retrieval) { effectiveRetrieval = retrieval; setRetrievalResult(retrieval); setDisplayedProducts(dedupeProducts(retrieval.shortlist)); setSeenHandles(retrieval.shortlist.map((x) => x.product_handle)); setRotationCursor(retrieval.nextRotationCursor); }
       }
+
+      if (!effectiveCleanedImage) throw new Error("Clean room image is not available.");
       if (!effectiveRetrieval?.shortlist?.length) throw new Error("No catalogue products were retrieved.");
 
-      if (isInitialGeneration) {
-        // ══════════════════════════════════════════════════════════════════════
-        // PIPELINE
-        // Step 1 — Retrieve: 1 catalogue product per furniture slot
-        // Step 2 — Imagen:   preserve room geometry
-        // Step 3 — Blend:    place each catalogue product into room (multi-pass)
-        // Step 4 — Display:  show placed products as IN ROOM cards directly
-        // ══════════════════════════════════════════════════════════════════════
+      const editPlan = buildClientEditPlan({ theme, editMode: !!generatedRoomImage, catalogPinnedProducts });
+      setLastEditPlan(editPlan);
+      setPipelineStatus(editPlan.mode === "initial_generate" ? "Generating your AI room design…" : "Applying targeted edit…");
 
-        // ── Step 1: Select 1 product per slot from catalogue ─────────────────
-        // Priority order: sofa → coffee_table → rug → lamp → accent_chair
-        const SLOTS = ["sofa", "rug", "coffee_table", "lamp"]; // lamp last — hardest blend
-        const SECTIONAL_KW = ["sectional", "l shaped", "l-shaped", "modular", "3 seater", "4 seater", "large"];
-        const SMALL_KW     = ["loveseat", "love seat", "small spaces", "2 seater", "settee"];
+      const generateData = await runGenerateRoom({
+        roomType, theme, originalRoomBase64: uploadedRoomImage, cleanedRoomBase64: effectiveCleanedImage!,
+        shortlist: effectiveRetrieval.shortlist, authoritativeSelection: effectiveRetrieval.authoritativeSelection || [],
+        editMode: !!generatedRoomImage, baseGeneratedImage: generatedRoomImage,
+        previousCatalogPinnedProducts: catalogPinnedProducts, previousInnovationProducts: innovativePinnedProducts,
+        editPlan, sceneState,
+      });
 
-        // Get all sofas and rank: sectionals first, loveseats last
-        const allSofas = effectiveRetrieval.shortlist.filter(p =>
-          (p.normalized_category || p.category || "").toLowerCase() === "sofa" && p.image_url
-        );
-        const rankedSofas = [
-          ...allSofas.filter(p => SECTIONAL_KW.some(k => p.title?.toLowerCase().includes(k))),
-          ...allSofas.filter(p => !SECTIONAL_KW.some(k => p.title?.toLowerCase().includes(k)) && !SMALL_KW.some(k => p.title?.toLowerCase().includes(k))),
-          ...allSofas.filter(p => SMALL_KW.some(k => p.title?.toLowerCase().includes(k))),
-        ];
-        console.log("Sofa candidates:", rankedSofas.slice(0, 3).map(p => p.title?.slice(0, 50)));
-
-        const selectedSlots: Array<{ category: string; title: string; imageUrl: string; product: any }> = [];
-        const usedHandles = new Set<string>();
-
-        // Pick best sofa with reachable URL
-        for (const sofa of rankedSofas.slice(0, 5)) {
-          try {
-            const check = await fetch(sofa.image_url as string, { method: "HEAD", signal: AbortSignal.timeout(4000) });
-            if (check.ok) {
-              selectedSlots.push({ category: "sofa", title: sofa.title, imageUrl: sofa.image_url as string, product: sofa });
-              usedHandles.add(sofa.product_handle);
-              break;
-            }
-          } catch { continue; }
-        }
-
-        // Pick best product for each remaining slot
-        for (const slot of SLOTS.filter(s => s !== "sofa")) {
-          const candidates = effectiveRetrieval.shortlist.filter(p => {
-            const cat = (p.normalized_category || p.category || "").toLowerCase();
-            const title = (p.title || "").toLowerCase();
-            if (cat !== slot) return false;
-            if (!p.image_url || usedHandles.has(p.product_handle)) return false;
-            // Exclude console/entryway tables
-            if (title.includes("console") || title.includes("entryway") || title.includes("sofa table")) return false;
-            return true;
-          });
-          for (const candidate of candidates.slice(0, 3)) {
-            try {
-              const check = await fetch(candidate.image_url as string, { method: "HEAD", signal: AbortSignal.timeout(4000) });
-              if (check.ok) {
-                selectedSlots.push({ category: slot, title: candidate.title, imageUrl: candidate.image_url as string, product: candidate });
-                usedHandles.add(candidate.product_handle);
-                break;
-              }
-            } catch { continue; }
-          }
-          if (selectedSlots.length >= 4) break; // max 4 slots to keep blend fast
-        }
-
-        console.log("Selected catalogue products for blending:", selectedSlots.map(s => `[${s.category}] ${s.title.slice(0, 40)}`));
-
-        // ── Step 2: Imagen inpainting — preserve room geometry ────────────────
-        setPipelineStatus("Preserving your room geometry…");
-        let imagenImage = "";
-        try {
-          const inpaintResult = await runInpaintRoom({ imageBase64: uploadedRoomImage, theme, roomType });
-          imagenImage = inpaintResult.generatedImage;
-          console.log("Imagen done — geometry preserved");
-        } catch (inpaintErr) {
-          console.warn("Imagen failed:", inpaintErr);
-          throw new Error("Failed to preserve room geometry. Please try again.");
-        }
-
-        // ── Step 3: Multi-pass Gemini blend — place each catalogue product ─────
-        setPipelineStatus("Placing catalogue products into your room…");
-        let finalRoomImage = imagenImage;
-        const placedProducts: Array<{ category: string; title: string; imageUrl: string; product: any }> = [];
-
-        if (selectedSlots.length > 0) {
-          try {
-            const blendRes = await fetch("/api/multi-blend", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                baseImage: imagenImage,
-                slots:     selectedSlots.map(s => ({ category: s.category, title: s.title, imageUrl: s.imageUrl })),
-                theme,
-                roomType,
-              }),
-            });
-            const blendData = await blendRes.json();
-            if (blendData?.ok && blendData?.finalImage) {
-              finalRoomImage = blendData.finalImage;
-              // Track which products were successfully placed
-              // Use title match as well as category — more robust than category-only
-              const placedCategories = new Set((blendData.placedProducts || []).map((p: any) => p.category));
-              for (const slot of selectedSlots) {
-                if (placedCategories.has(slot.category)) {
-                  placedProducts.push(slot);
-                }
-              }
-              console.log("Multi-blend done:", blendData.passResults?.map((r: any) => `[${r.category}] ${r.success ? "✅" : "❌"}`).join(", "));
-              console.log("Placed products:", placedProducts.map(p => `[${p.category}] ${p.title.slice(0, 40)}`));
-              console.log("Product handles:", placedProducts.map(p => p.product?.product_handle || "NO_HANDLE"));
-            } else {
-              console.warn("Multi-blend failed:", blendData?.error);
-              finalRoomImage = imagenImage; // fallback to Imagen result
-            }
-          } catch (blendErr) {
-            console.warn("Multi-blend error:", blendErr);
-            finalRoomImage = imagenImage; // fallback to Imagen result
-          }
-        }
-
-        // ── Step 4: Show results — no detection needed ────────────────────────
-        // We know exactly which products are in the room because we placed them
-        // Set the generated room image
-        setGeneratedRoomImage(finalRoomImage);
-
-        // Build IN ROOM product cards directly from placed products
-        // Use placed products if available, otherwise fall back to all selected slots
-        const sourceProducts = placedProducts.length > 0 ? placedProducts : selectedSlots;
-        const inRoomProducts = sourceProducts.map(s => ({
-          ...s.product,
-          pinned:  true,
-          source:  "catalog" as const,
-          // Ensure product_handle is set — dedupeProducts filters items without it
-          product_handle: s.product?.product_handle || s.title.toLowerCase().replace(/\s+/g, "-"),
-        }));
-        console.log("IN ROOM products to display:", inRoomProducts.map((p: any) => `[${p.normalized_category || p.category}] ${p.title?.slice(0, 40)} handle=${p.product_handle}`));
-
-        setPinnedProducts(dedupeProducts(inRoomProducts));
-        setDisplayedProducts(dedupeProducts([
-          ...inRoomProducts,
-          ...effectiveRetrieval.shortlist.filter(p => !inRoomProducts.find((x: any) => x.product_handle === p.product_handle)),
-        ]));
-
-        const editPlan = buildClientEditPlan({ theme, editMode: false, catalogPinnedProducts: [] });
-        setLastEditPlan(editPlan);
-        setSceneState({ catalogPinnedProducts: inRoomProducts, innovationProducts: [], lastEditPlan: editPlan });
-        setPipelineRunning(false);
-        return; // Done — no Step 3 needed
+      setGeneratedRoomImage(generateData.generatedImage);
+      if (generateData.editPlan) setLastEditPlan(generateData.editPlan);
+      if (generateData.selectedProducts?.length)
+        setRetrievalResult((prev) => prev ? { ...prev, authoritativeSelection: generateData.selectedProducts } : prev);
+      if (generateData.pinnedProducts?.length) {
+        setPinnedProducts(dedupeProducts(generateData.pinnedProducts.map((x) => ({ ...x, pinned: true }))));
       } else {
-        // ── GEMINI EDIT PATH (subsequent regenerations/edits) ─────────────────
-        let effectiveCleanedImage = cleanedRoomImage;
-        if (!effectiveCleanedImage) {
-          setPipelineStatus("Preparing room for edit…");
-          const cleanResult = await runCleanRoom(uploadedRoomImage);
-          effectiveCleanedImage = cleanResult.cleanedImage;
-          setCleanedRoomImage(cleanResult.cleanedImage);
-        }
-
-        const editPlan = buildClientEditPlan({
-          theme, editMode: true, catalogPinnedProducts,
-        });
-        setLastEditPlan(editPlan);
-        setPipelineStatus("Applying your edit…");
-
-        const generateData = await runGenerateRoom({
-          roomType,
-          theme,
-          originalRoomBase64: uploadedRoomImage,
-          cleanedRoomBase64: effectiveCleanedImage,
-          shortlist: effectiveRetrieval.shortlist,
-          authoritativeSelection: effectiveRetrieval.authoritativeSelection || [],
-          editMode: true,
-          baseGeneratedImage: generatedRoomImage,
-          previousCatalogPinnedProducts: catalogPinnedProducts,
-          previousInnovationProducts: innovativePinnedProducts,
-          editPlan,
-          sceneState,
-        });
-
-        setGeneratedRoomImage(generateData.generatedImage);
-        if (generateData.editPlan) setLastEditPlan(generateData.editPlan);
-        if (generateData.selectedProducts?.length)
-          setRetrievalResult((prev) =>
-            prev ? { ...prev, authoritativeSelection: generateData.selectedProducts } : prev
-          );
-        if (generateData.pinnedProducts?.length) {
-          setPinnedProducts(dedupeProducts(generateData.pinnedProducts.map((x) => ({ ...x, pinned: true }))));
-        } else {
-          setPinnedProducts([]);
-        }
-        if (generateData.sceneState) {
-          setSceneState(generateData.sceneState);
-        } else {
-          setSceneState({
-            catalogPinnedProducts,
-            innovationProducts: innovativePinnedProducts,
-            lastEditPlan: generateData.editPlan ?? editPlan,
-          });
-        }
+        setPinnedProducts([]);
+      }
+      if (generateData.sceneState) {
+        setSceneState(generateData.sceneState);
+      } else {
+        setSceneState({ catalogPinnedProducts, innovationProducts: innovativePinnedProducts, lastEditPlan: generateData.editPlan ?? editPlan });
       }
 
       setPipelineStatus("Done ✓");
@@ -1464,7 +1212,7 @@ export default function Page() {
     }
   }
 
-    const canClean    = !!uploadedRoomImage && !cleaning && !pipelineRunning;
+  const canClean    = !!uploadedRoomImage && !cleaning && !pipelineRunning;
   const canRetrieve = !!roomType && !!theme.trim() && !retrieving && !pipelineRunning && !detectingRoomType;
   const canGenerate = !!uploadedRoomImage && !!roomType && !!theme.trim() && !pipelineRunning && !detectingRoomType;
   const priceInvalid = minPrice !== null && maxPrice !== null && minPrice > maxPrice;
@@ -1723,20 +1471,6 @@ export default function Page() {
             <div className="grid gap-4 sm:grid-cols-2">
               <ImagePanel title="Uploaded Room" image={uploadedRoomImage} emptyText="Upload a room photo to get started" />
               <div>
-                {/* Show cleaned room for verification — visible until final image is ready */}
-                {cleanedRoomImage && !generatedRoomImage && (
-                  <div className="mb-4">
-                    <ImagePanel
-                      title="Cleaned Room (furniture removed)"
-                      image={cleanedRoomImage}
-                      emptyText=""
-                      badge="Step 1 Done"
-                    />
-                    <p className="mt-1 text-xs text-center text-gray-500">
-                      ✓ Walls, floor, windows, ceiling preserved — only furniture removed
-                    </p>
-                  </div>
-                )}
                 <ImagePanel
                   title="AI Generated Room"
                   image={generatedRoomImage}

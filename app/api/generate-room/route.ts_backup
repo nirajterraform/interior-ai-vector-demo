@@ -973,21 +973,27 @@ Catalogue-covered categories:
 ${coveredCatalogueCategories}
 
 Matching rules:
-1. For each CLEARLY VISIBLE furniture piece in the room, find the catalogue reference image that most closely matches it in category, colour, material, and style.
-2. Match by category first, then by closest style/colour. A beige sectional → match closest beige sofa in catalogue.
-3. Return exactly ONE product_handle per furniture category. No duplicates.
-4. ONLY return handles from the "Catalogue product handles available" list below. NEVER invent or guess handles.
-5. NEVER return a handle for furniture that is not clearly visible in the room image.
-6. innovative_products: ONLY use for truly unusual objects with NO matching catalogue category (e.g. grand piano, aquarium, fireplace). Standard furniture like stools, ottomans, chairs — if not in the catalogue shortlist, leave them out entirely. Do NOT invent product names.
-7. If in doubt about whether something is visible — leave it out. Fewer accurate matches is better than many inaccurate ones.
+1. For each major visible furniture piece in the room (sofa, chair, coffee table, rug, lamp, cabinet, etc.), find the catalogue reference image that most closely matches it in terms of category, colour, material, and style.
+2. A match does not need to be visually identical — match by category first, then by closest style/colour. A grey sofa in the room matches the closest grey sofa in the catalogue references.
+3. For each furniture category visible in the room, return exactly ONE best-matching catalogue product_handle. Do not return multiple handles for the same category.
+4. If a visible furniture category has NO catalogue reference at all (e.g. a piano when no piano reference was provided), mark it as innovative.
+5. Do not mark anything as innovative if a catalogue reference exists for that furniture category — always prefer the closest catalogue match.
+6. For innovative items, provide a tight bbox [x1,y1,x2,y2] in 0-1000 coordinates.
+7. Never return a catalogue product_handle for furniture that is genuinely not visible in the room.
 
-Catalogue product handles available (you may ONLY return handles from this exact list):
+Catalogue product handles available:
 ${shortlistSummary(shortlist)}
 
-Return strict JSON only — innovative_products should be empty array in most cases:
+Return strict JSON only:
 {
   "catalog_product_handles": ["handle1", "handle2"],
-  "innovative_products": []
+  "innovative_products": [
+    {
+      "title": "Piano",
+      "category": "piano",
+      "bbox": [120, 420, 420, 900]
+    }
+  ]
 }
 `.trim();
 }
@@ -1205,8 +1211,7 @@ async function generateRoomAttempt(
   editPlan: EditPlan,
   lockedCatalogueProducts: ShortlistItem[],
   previousInnovationProducts: ShortlistItem[],
-  baseGeneratedImage?: string | null,
-  originalRoomBase64?: string
+  baseGeneratedImage?: string | null
 ) {
   const effectiveSelection = ensureSelectionCoverage(shortlist, authoritativeSelection, theme);
   const { referenceParts, validShortlist, catalogueImageParts } = await buildReferenceParts(shortlist, effectiveSelection, theme);
@@ -1245,17 +1250,13 @@ async function generateRoomAttempt(
       },
     });
   } else {
-    // Dual anchor: original room confirms exact geometry, cleaned room is the empty canvas
-    // Sending both gives Gemini the strongest possible geometry signal
-    if (originalRoomBase64 && originalRoomBase64 !== cleanedRoomBase64) {
-      roomParts.push({ text: "IMAGE 1 — ORIGINAL ROOM: This defines the exact window positions, wall layout, floor material, ceiling height, camera angle, and room proportions. ALL of these must be IDENTICAL in your output. Do not move, resize, or change any architectural element." });
-      roomParts.push({ inlineData: { mimeType: cleanedMimeType, data: originalRoomBase64 } });
-      roomParts.push({ text: "IMAGE 2 — CLEANED ROOM: Same room as Image 1 with furniture removed. Use this as the empty canvas for furniture placement. The architecture is identical to Image 1. Your output background must match Image 2 exactly." });
-      roomParts.push({ inlineData: { mimeType: cleanedMimeType, data: cleanedRoomBase64 } });
-    } else {
-      roomParts.push({ text: "BASE ROOM IMAGE (this defines the exact architecture, geometry, floor, walls, windows, and camera angle — do not alter any of these):" });
-      roomParts.push({ inlineData: { mimeType: cleanedMimeType, data: cleanedRoomBase64 } });
-    }
+    roomParts.push({ text: "BASE ROOM IMAGE (this defines the exact architecture, geometry, floor, walls, windows, and camera angle — do not alter any of these):" });
+    roomParts.push({
+      inlineData: {
+        mimeType: cleanedMimeType,
+        data: cleanedRoomBase64,
+      },
+    });
   }
 
   const parts: any[] = [
@@ -1530,14 +1531,8 @@ async function detectPinnedProducts(
     ]);
 
     let catalogPinned: ShortlistItem[] = [];
-    const shortlistHandles = new Set(shortlist.map((x) => x.product_handle));
     for (const handle of parsed.catalog_product_handles || []) {
-      // STRICT: only accept handles that exist in the shortlist — prevents hallucination
-      if (!shortlistHandles.has(handle)) {
-        console.warn(`Detection: ignoring hallucinated handle not in shortlist: ${handle}`);
-        continue;
-      }
-      const item = shortlistMap.get(handle);
+      const item = shortlistMap.get(handle) || catalogueContext.find((candidate) => candidate.product_handle === handle);
       if (item) catalogPinned.push({ ...item, pinned: true, source: "catalog" });
     }
 
@@ -1715,45 +1710,19 @@ export async function POST(req: NextRequest) {
 
       console.log("Catalogue blend mode — blending catalogue products into Imagen result");
 
-      // Get the primary product to blend — prefer sectional/large sofas
-      // because Imagen inpainting consistently generates large L-shaped sectionals
+      // Get the primary product to blend — the top authoritative sofa/seating pick
       const effectiveSelection = ensureSelectionCoverage(mergedShortlist, authoritativeSelection, theme || "");
 
-      // For sofas: strongly prefer sectional/L-shaped over loveseats/small sofas
-      // because the inpainting prompt generates large sectionals
-      const SECTIONAL_KEYWORDS = ["sectional", "l shaped", "l-shaped", "modular", "cloud sofa", "3 seater", "4 seater", "105 inch", "large"];
-      const SMALL_SOFA_KEYWORDS = ["loveseat", "love seat", "small spaces", "2 seater", "settee", "41 inch", "47 inch", "50 inch"];
-
+      // Pick the most important product to blend — sofa first, then coffee_table, then rug
+      const BLEND_PRIORITY = ["sofa", "accent_chair", "coffee_table", "side_table", "rug", "lamp"];
       let primaryProduct: ShortlistItem | null = null;
-
-      // First try: find a sectional/large sofa from the full shortlist
-      const allSofas = [...effectiveSelection, ...mergedShortlist].filter((x) =>
-        (x.normalized_category || x.category || "").toLowerCase() === "sofa" && x.image_url
-      );
-
-      // Prefer sectionals, deprioritise small loveseats
-      const rankedSofas = [
-        ...allSofas.filter((x) => SECTIONAL_KEYWORDS.some(kw => x.title?.toLowerCase().includes(kw))),
-        ...allSofas.filter((x) =>
-          !SECTIONAL_KEYWORDS.some(kw => x.title?.toLowerCase().includes(kw)) &&
-          !SMALL_SOFA_KEYWORDS.some(kw => x.title?.toLowerCase().includes(kw))
-        ),
-        ...allSofas.filter((x) => SMALL_SOFA_KEYWORDS.some(kw => x.title?.toLowerCase().includes(kw))),
-      ];
-
-      if (rankedSofas.length > 0) {
-        primaryProduct = rankedSofas[0] as ShortlistItem;
-      } else {
-        // Fallback: try other categories
-        const BLEND_PRIORITY = ["sofa", "coffee_table", "rug", "lamp"];
-        for (const cat of BLEND_PRIORITY) {
-          const found = effectiveSelection.find((x) =>
-            (x.normalized_category || x.category || "").toLowerCase().includes(cat)
-          ) || mergedShortlist.find((x) =>
-            (x.normalized_category || x.category || "").toLowerCase().includes(cat)
-          );
-          if (found) { primaryProduct = found as ShortlistItem; break; }
-        }
+      for (const cat of BLEND_PRIORITY) {
+        const found = effectiveSelection.find((x) =>
+          (x.normalized_category || x.category || "").toLowerCase().includes(cat)
+        ) || mergedShortlist.find((x) =>
+          (x.normalized_category || x.category || "").toLowerCase().includes(cat)
+        );
+        if (found) { primaryProduct = found as ShortlistItem; break; }
       }
 
       // Build focused reference parts — primary product first, then up to 2 more
@@ -1854,26 +1823,12 @@ export async function POST(req: NextRequest) {
         ? detShortlist.filter((x) => {
             const cat = (x.normalized_category || x.category || "").toLowerCase();
             const title = (x.title || "").toLowerCase();
-            // Exclude bedroom/office categories
-            if (["desk", "office_chair", "dresser", "bed", "mattress", "bedding"].includes(cat)) return false;
-            // Exclude desk/office products by title
+            // Exclude categories not relevant to living room
+            if (cat === "desk" || cat === "office_chair" || cat === "dresser") return false;
+            // Exclude products with desk/office in title
             if (title.includes("desk") || title.includes("monitor stand") || title.includes("office")) return false;
-            // Exclude ALL console/entryway/sofa tables from living room detection
-            // These are hall/entry pieces — not what users see in a living room
-            if (
-              title.includes("console") ||
-              title.includes("entryway") ||
-              title.includes("sofa table") ||
-              title.includes("accent sofa") ||
-              title.includes("narrow sofa")
-            ) return false;
-            // For side_table category specifically, only allow bedside/end tables
-            if (cat === "side_table" && (
-              title.includes("console") ||
-              title.includes("entryway") ||
-              title.includes("sofa table") ||
-              title.includes("farmhouse") && title.includes("long")
-            )) return false;
+            // Exclude console/entryway tables — these are not living room coffee tables
+            if (title.includes("console") || title.includes("entryway") || title.includes("sofa table")) return false;
             return true;
           })
         : detShortlist;
@@ -1957,8 +1912,7 @@ export async function POST(req: NextRequest) {
         editPlan,
         previousCatalogPinnedProducts,
         previousInnovationProducts,
-        baseGeneratedImage,
-        originalRoomBase64
+        baseGeneratedImage
       );
 
       const validation = await validateGeneratedRoom(

@@ -1,0 +1,99 @@
+import { NextRequest, NextResponse } from "next/server";
+import { GoogleGenAI } from "@google/genai";
+import { withGeminiRetry } from "@/lib/geminiRetry";
+
+const ai = new GoogleGenAI({
+  vertexai: true,
+  project: process.env.GOOGLE_CLOUD_PROJECT!,
+  location: process.env.GOOGLE_CLOUD_LOCATION || "global",
+});
+
+function stripDataUrlPrefix(input: string): string {
+  const idx = input.indexOf(",");
+  return idx >= 0 ? input.slice(idx + 1) : input;
+}
+
+// Prompt: look at the generated room and describe the furniture
+// in a way that will match catalogue products
+const DESCRIBE_PROMPT = `
+You are an interior design product expert. Look at this room image carefully.
+
+Identify every visible furniture piece and describe it for catalogue matching.
+Use ONLY these exact category words — nothing else:
+
+CATEGORY RULES (critical):
+- Main seating piece → "sofa" or "sectional sofa" or "L shaped sectional sofa" or "3 seater sofa"
+- Table sitting IN FRONT of the sofa (low, centre of room) → ALWAYS "coffee table" — NEVER "console table" or "sofa table"
+- Small table BESIDE the sofa or bed → "side table" or "end table"  
+- Floor covering under furniture → "area rug" or "jute rug" or "wool rug"
+- Standing light → "floor lamp"
+- Table light → "table lamp"
+- Wall storage with shelves → "bookshelf"
+- Seat without back → "ottoman" or "pouf"
+- Single padded seat → "accent chair"
+
+STRICT RULES:
+1. NEVER use the words "console table", "sofa table", "entryway table" — use "coffee table" for any table in front of the sofa
+2. Always mention the sofa first
+3. Always mention the coffee table if one is visible in front of the sofa
+4. Always mention the rug if visible on the floor
+5. Use colour + material + category: "beige linen sofa", "oak wood coffee table", "cream jute area rug"
+6. Return ONLY a comma-separated list — no explanation, no bullets
+
+Example output:
+beige L shaped sectional sofa, rectangular oak wood coffee table, cream jute area rug, natural wood floor lamp, wooden bookshelf
+`.trim();
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const imageBase64Input = body?.imageBase64;
+    const mimeType = body?.mimeType || "image/jpeg";
+
+    if (!imageBase64Input) {
+      return NextResponse.json(
+        { ok: false, error: "imageBase64 is required" },
+        { status: 400 }
+      );
+    }
+
+    const imageBase64 = stripDataUrlPrefix(imageBase64Input);
+
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: DESCRIBE_PROMPT },
+              { inlineData: { mimeType, data: imageBase64 } },
+            ],
+          },
+        ],
+      })
+    );
+
+    const parts = response?.candidates?.[0]?.content?.parts || [];
+    const description = parts
+      .filter((p: any) => typeof p?.text === "string")
+      .map((p: any) => p.text)
+      .join("")
+      .trim();
+
+    return NextResponse.json({
+      ok: true,
+      furnitureDescription: description,
+    });
+
+  } catch (error) {
+    console.error("describe-room error:", error);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : "Failed to describe room",
+      },
+      { status: 500 }
+    );
+  }
+}

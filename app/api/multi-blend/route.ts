@@ -1,0 +1,207 @@
+import { NextRequest, NextResponse } from "next/server";
+import { GoogleGenAI, Modality } from "@google/genai";
+import { withGeminiRetry } from "@/lib/geminiRetry";
+
+/**
+ * multi-blend/route.ts
+ * =====================
+ * Takes the Imagen-preserved room and blends catalogue products
+ * into it one slot at a time.
+ *
+ * Receives:
+ *   - baseImage     : Imagen output (geometry preserved)
+ *   - slots         : array of { category, title, imageUrl }
+ *                     exactly one product per furniture slot
+ *   - theme         : user selected theme
+ *   - roomType      : living_room etc.
+ *
+ * Process:
+ *   For each slot in order (sofa → coffee_table → rug → lamp → ...):
+ *     - Send current canvas + product image to Gemini
+ *     - Ask: "Replace ONLY the [category] with this product"
+ *     - Use result as canvas for next pass
+ *
+ * Returns:
+ *   - finalImage       : room with all catalogue products placed
+ *   - placedProducts   : which products were successfully placed
+ *   - passResults      : per-pass success/fail for debugging
+ */
+
+const ai = new GoogleGenAI({
+  vertexai: true,
+  project:  process.env.GOOGLE_CLOUD_PROJECT!,
+  location: process.env.GOOGLE_CLOUD_LOCATION || "global",
+});
+
+function stripDataUrl(b64: string): string {
+  const i = b64.indexOf(",");
+  return i >= 0 ? b64.slice(i + 1) : b64;
+}
+
+function getMime(dataUrl: string): string {
+  if (dataUrl.startsWith("data:")) {
+    return dataUrl.split(";")[0].split(":")[1] || "image/png";
+  }
+  return "image/png";
+}
+
+async function fetchImage(url: string): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    const buf  = await res.arrayBuffer();
+    const mime = (res.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+    return { data: Buffer.from(buf).toString("base64"), mimeType: mime };
+  } catch {
+    return null;
+  }
+}
+
+function buildBlendPrompt(
+  category: string,
+  productTitle: string,
+  theme: string,
+  roomType: string
+): string {
+  const room = roomType.replace(/_/g, " ");
+
+  // Per-category instruction — be specific about what to replace
+  const REPLACE_INSTRUCTION: Record<string, string> = {
+    sofa:         "Replace ONLY the sofa/couch/sectional in the room with the catalogue product shown in Image 2. Keep everything else exactly the same.",
+    coffee_table: "Replace ONLY the coffee table (the low table in front of the sofa) with the catalogue product shown in Image 2. Keep everything else exactly the same.",
+    rug:          "Replace ONLY the area rug/carpet on the floor with the catalogue product shown in Image 2. Keep everything else exactly the same.",
+    lamp:         "Replace ONLY the floor lamp or table lamp with the catalogue product shown in Image 2. Keep everything else exactly the same.",
+    accent_chair: "Replace ONLY the accent chair (single seat beside the sofa) with the catalogue product shown in Image 2. Keep everything else exactly the same.",
+    ottoman:      "Replace ONLY the ottoman or pouf with the catalogue product shown in Image 2. Keep everything else exactly the same.",
+    side_table:   "Replace ONLY the side table or end table with the catalogue product shown in Image 2. Keep everything else exactly the same.",
+  };
+
+  const instruction = REPLACE_INSTRUCTION[category]
+    || `Replace ONLY the ${category} in the room with the catalogue product shown in Image 2. Keep everything else exactly the same.`;
+
+  return `You are a professional interior photo retouching artist.
+
+Image 1: A ${theme} ${room}. This is your canvas — do not change it except for the single furniture piece described below.
+Image 2: A catalogue product — "${productTitle}" (${category}).
+
+YOUR TASK:
+${instruction}
+
+RULES:
+1. Keep Image 1 EXACTLY as-is — same walls, floor, windows, ceiling, camera angle, lighting, all other furniture
+2. Replace ONLY the ${category} — nothing else
+3. The replacement must match the catalogue product in Image 2 exactly — same colour, shape, material
+4. Make it look photorealistic — correct perspective, scale, and shadows matching the room lighting
+5. Do NOT use the background from Image 2 — it is a studio photo, ignore its background
+6. Do NOT move, resize, or change any other object in the room
+7. If you cannot find a ${category} in Image 1, return Image 1 unchanged
+
+Output: one photorealistic room image only. No text.`.trim();
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body     = await req.json();
+    const baseImage = body?.baseImage  as string;
+    const slots     = body?.slots      as Array<{ category: string; title: string; imageUrl: string }>;
+    const theme     = body?.theme      as string || "modern";
+    const roomType  = body?.roomType   as string || "living_room";
+
+    if (!baseImage)     return NextResponse.json({ ok: false, error: "baseImage required" }, { status: 400 });
+    if (!slots?.length) return NextResponse.json({ ok: false, error: "slots required" }, { status: 400 });
+
+    let canvas      = baseImage;   // starts as Imagen output, updated after each pass
+    let canvasMime  = getMime(baseImage);
+    const placedProducts: Array<{ category: string; title: string; imageUrl: string }> = [];
+    const passResults:    Array<{ category: string; title: string; success: boolean; reason?: string }> = [];
+
+    console.log(`Multi-blend: ${slots.length} slots to process for ${theme} ${roomType}`);
+
+    for (const slot of slots) {
+      console.log(`  Blending [${slot.category}]: "${slot.title.slice(0, 50)}"`);
+
+      // Fetch product image
+      const productImg = await fetchImage(slot.imageUrl);
+      if (!productImg) {
+        console.warn(`  ⚠️  Skipping [${slot.category}] — could not fetch image`);
+        passResults.push({ category: slot.category, title: slot.title, success: false, reason: "image fetch failed" });
+        continue;
+      }
+
+      const prompt = buildBlendPrompt(slot.category, slot.title, theme, roomType);
+
+      const parts: any[] = [
+        { text: prompt },
+        { text: "Image 1 — ROOM CANVAS (edit only the specified furniture piece):" },
+        { inlineData: { mimeType: canvasMime, data: stripDataUrl(canvas) } },
+        { text: `Image 2 — CATALOGUE PRODUCT to place (${slot.category}):` },
+        { inlineData: productImg },
+      ];
+
+      try {
+        const response = await withGeminiRetry(() =>
+          ai.models.generateContent({
+            model:    "gemini-2.5-flash-image",
+            contents: [{ role: "user", parts }],
+            config:   { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+          })
+        );
+
+        // Extract image from response
+        let newImageData: string | null  = null;
+        let newImageMime = "image/png";
+        let responseText = "";
+
+        for (const candidate of response?.candidates || []) {
+          for (const part of candidate?.content?.parts || []) {
+            if (part?.inlineData?.data) {
+              newImageData = part.inlineData.data;
+              newImageMime = part.inlineData.mimeType || "image/png";
+            }
+            if (typeof part?.text === "string") responseText += part.text;
+          }
+        }
+
+        if (newImageData) {
+          // Update canvas for next pass
+          canvas     = `data:${newImageMime};base64,${newImageData}`;
+          canvasMime = newImageMime;
+          placedProducts.push(slot);
+          passResults.push({ category: slot.category, title: slot.title, success: true });
+          console.log(`  ✅ [${slot.category}] blend succeeded`);
+        } else {
+          console.warn(`  ⚠️  [${slot.category}] Gemini returned no image:`, responseText.slice(0, 100));
+          passResults.push({ category: slot.category, title: slot.title, success: false, reason: "no image returned" });
+          // Keep current canvas unchanged — continue with next slot
+        }
+
+      } catch (err) {
+        console.warn(`  ⚠️  [${slot.category}] blend failed:`, err);
+        passResults.push({ category: slot.category, title: slot.title, success: false, reason: String(err).slice(0, 100) });
+        // Keep current canvas unchanged — continue with next slot
+      }
+
+      // Small delay between passes to avoid rate limiting
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    console.log(`Multi-blend complete: ${placedProducts.length}/${slots.length} products placed`);
+    console.log("Pass results:", passResults.map(r => `[${r.category}] ${r.success ? "✅" : "❌"}`).join(", "));
+
+    return NextResponse.json({
+      ok:             true,
+      finalImage:     canvas,
+      placedProducts,
+      passResults,
+      totalPasses:    slots.length,
+      successCount:   placedProducts.length,
+    });
+
+  } catch (error) {
+    console.error("multi-blend error:", error);
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "Multi-blend failed" },
+      { status: 500 }
+    );
+  }
+}
