@@ -291,13 +291,6 @@ const BUCKET_EXCLUDES: Record<string, string[]> = {
     "sink",
     "faucet",
     "playhouse",
-    // Exclude tables from seating — "sofa table" contains "sofa" but is not a sofa
-    "sofa table",
-    "console table",
-    "entryway table",
-    "side table",
-    "end table",
-    "drawers and shelves",
   ],
   tables: [
     "bedding",
@@ -320,14 +313,6 @@ const BUCKET_EXCLUDES: Record<string, string[]> = {
     "living room set",
     "furniture set",
     "sofa set",
-    // Exclude bar tables — too tall for living room coffee table use
-    "bar table",
-    "bar stool",
-    "tabletop",
-    "36 inch",
-    "36.2 inch",
-    "pub table",
-    "bistro table",
   ],
   lighting: [
     "bedding",

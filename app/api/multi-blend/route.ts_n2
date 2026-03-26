@@ -79,21 +79,34 @@ function buildBlendPrompt(
   const instruction = REPLACE_INSTRUCTION[category]
     || `Replace ONLY the ${category} in the room with the catalogue product shown in Image 2. Keep everything else exactly the same.`;
 
-  return `You are a professional interior photo retouching artist.
+  return `You are doing ONE surgical replacement in a room photo. Replace ONLY the ${category}.
 
-Image 1: The room to edit.
-Image 2: The replacement ${category} — "${productTitle}".
+Image 1: The room. This is your base. Study every object in it.
+Image 2: The replacement ${category} — "${productTitle}". Use ONLY the furniture piece, ignore its background.
 
-Task: Replace the ${category} in Image 1 with the product shown in Image 2.
+YOUR ONLY JOB: Remove the existing ${category} and put Image 2's product in its exact position.
 
-Rules:
-1. Keep Image 1 exactly as-is — only the ${category} changes
-2. Match Image 2 exactly for colour, shape, and material
-3. Correct perspective, scale and shadows for the room
-4. Ignore Image 2's background — studio backdrop only
-5. If no ${category} visible in Image 1, return Image 1 unchanged
+EVERY OTHER OBJECT MUST STAY IDENTICAL TO IMAGE 1:
+- Coffee table → do NOT change it
+- Ottoman/pouf → do NOT change it
+- Rug/carpet → do NOT change it
+- Lamps → do NOT change them
+- Cushions → do NOT change them
+- Plants → do NOT change them
+- Walls, floor, ceiling, windows, curtains → do NOT change them
+- All other furniture → do NOT change any of it
 
-Output: one room image only. No text.`.trim();
+The ONLY difference between your output and Image 1 is the ${category}.
+Everything else must be pixel-identical to Image 1.
+
+For the ${category} replacement:
+- Use exact colour from Image 2
+- Use exact shape from Image 2
+- Use exact material from Image 2
+- Place it in the same position as the original ${category} was in Image 1
+- Apply correct perspective, scale, and shadows to match the room
+
+Output: one photorealistic room image only. No text.`.trim();
 }export async function POST(req: NextRequest) {
   try {
     const body     = await req.json();

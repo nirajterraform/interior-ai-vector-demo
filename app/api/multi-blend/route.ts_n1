@@ -47,7 +47,7 @@ function getMime(dataUrl: string): string {
 
 async function fetchImage(url: string): Promise<{ data: string; mimeType: string } | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     const buf  = await res.arrayBuffer();
     const mime = (res.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
@@ -70,7 +70,7 @@ function buildBlendPrompt(
     sofa:         "Replace ONLY the sofa/couch/sectional in the room with the catalogue product shown in Image 2. Keep everything else exactly the same.",
     coffee_table: "Replace ONLY the coffee table (the low table in front of the sofa) with the catalogue product shown in Image 2. Keep everything else exactly the same.",
     rug:          "Replace ONLY the area rug/carpet on the floor with the catalogue product shown in Image 2. Keep everything else exactly the same.",
-    lamp:         "Replace ONLY the floor lamp or standing lamp with the catalogue product shown in Image 2. The lamp stands on the floor in its original position. Do NOT add any wall art or paintings. Keep everything else exactly the same.",
+    lamp:         "Replace ONLY the floor lamp or table lamp with the catalogue product shown in Image 2. Keep everything else exactly the same.",
     accent_chair: "Replace ONLY the accent chair (single seat beside the sofa) with the catalogue product shown in Image 2. Keep everything else exactly the same.",
     ottoman:      "Replace ONLY the ottoman or pouf with the catalogue product shown in Image 2. Keep everything else exactly the same.",
     side_table:   "Replace ONLY the side table or end table with the catalogue product shown in Image 2. Keep everything else exactly the same.",
@@ -81,20 +81,25 @@ function buildBlendPrompt(
 
   return `You are a professional interior photo retouching artist.
 
-Image 1: The room to edit.
-Image 2: The replacement ${category} — "${productTitle}".
+Image 1: A ${theme} ${room}. This is your canvas — do not change it except for the single furniture piece described below.
+Image 2: A catalogue product — "${productTitle}" (${category}).
 
-Task: Replace the ${category} in Image 1 with the product shown in Image 2.
+YOUR TASK:
+${instruction}
 
-Rules:
-1. Keep Image 1 exactly as-is — only the ${category} changes
-2. Match Image 2 exactly for colour, shape, and material
-3. Correct perspective, scale and shadows for the room
-4. Ignore Image 2's background — studio backdrop only
-5. If no ${category} visible in Image 1, return Image 1 unchanged
+RULES:
+1. Keep Image 1 EXACTLY as-is — same walls, floor, windows, ceiling, camera angle, lighting, all other furniture
+2. Replace ONLY the ${category} — nothing else
+3. The replacement must match the catalogue product in Image 2 exactly — same colour, shape, material
+4. Make it look photorealistic — correct perspective, scale, and shadows matching the room lighting
+5. Do NOT use the background from Image 2 — it is a studio photo, ignore its background
+6. Do NOT move, resize, or change any other object in the room
+7. If you cannot find a ${category} in Image 1, return Image 1 unchanged
 
-Output: one room image only. No text.`.trim();
-}export async function POST(req: NextRequest) {
+Output: one photorealistic room image only. No text.`.trim();
+}
+
+export async function POST(req: NextRequest) {
   try {
     const body     = await req.json();
     const baseImage = body?.baseImage  as string;
@@ -176,8 +181,8 @@ Output: one room image only. No text.`.trim();
         // Keep current canvas unchanged — continue with next slot
       }
 
-      // Delay between passes — longer delay reduces rate limit risk
-      await new Promise(r => setTimeout(r, 2000));
+      // Small delay between passes to avoid rate limiting
+      await new Promise(r => setTimeout(r, 1000));
     }
 
     console.log(`Multi-blend complete: ${placedProducts.length}/${slots.length} products placed`);

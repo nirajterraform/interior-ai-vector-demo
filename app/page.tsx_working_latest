@@ -381,8 +381,6 @@ function ProductCard({
   onAddToWishlist,
   isInWishlist = false,
   onOpenModal,
-  onApplyToRoom,
-  canApplyToRoom = false,
 }: {
   item: RetrievedProduct;
   pinned?: boolean;
@@ -390,8 +388,6 @@ function ProductCard({
   onAddToWishlist?: (item: RetrievedProduct) => void;
   isInWishlist?: boolean;
   onOpenModal?: (item: RetrievedProduct) => void;
-  onApplyToRoom?: (item: RetrievedProduct) => void;
-  canApplyToRoom?: boolean;
 }) {
   const label = priceLabel(item);
   const isInnovative = item.source === "innovative";
@@ -467,17 +463,6 @@ function ProductCard({
             </a>
           )}
         </div>
-
-        {/* Apply to Room — shown only when a generated room exists */}
-        {canApplyToRoom && !isInnovative && onApplyToRoom && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onApplyToRoom(item); }}
-            className="mt-2 w-full rounded-lg bg-amber-500 py-1.5 text-[11px] font-semibold text-white transition hover:bg-amber-600"
-          >
-            ✨ Apply to Room
-          </button>
-        )}
       </div>
     </div>
   );
@@ -1241,60 +1226,6 @@ export default function Page() {
     }
   }
 
-  // ── Apply specific product to room ───────────────────────────────────────
-  async function handleApplyProductToRoom(product: RetrievedProduct) {
-    if (!generatedRoomImage) return setError("Please generate a room first.");
-    if (!product.image_url) return setError("This product has no image.");
-
-    const category = (product.normalized_category || product.category || "").toLowerCase();
-    if (!category) return setError("Cannot determine product category.");
-
-    try {
-      setError(null);
-      setPipelineRunning(true);
-      setPipelineStatus(`Applying ${product.title.slice(0, 40)} to your room…`);
-
-      console.log(`Applying product to room: [${category}] ${product.title.slice(0, 60)}`);
-
-      // Single-slot blend on current generated room
-      const blendRes = await fetch("/api/multi-blend", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseImage: generatedRoomImage,
-          slots:     [{ category, title: product.title, imageUrl: product.image_url }],
-          theme,
-          roomType,
-        }),
-      });
-      const blendData = await blendRes.json();
-
-      if (!blendData?.ok || !blendData?.finalImage) {
-        throw new Error("Could not apply product to room. Please try again.");
-      }
-
-      // Update room image
-      setGeneratedRoomImage(blendData.finalImage);
-
-      // Replace the IN ROOM card for this category
-      const newProduct = { ...product, pinned: true, source: "catalog" as const };
-      setPinnedProducts(prev => {
-        const filtered = prev.filter(p =>
-          (p.normalized_category || p.category || "").toLowerCase() !== category
-        );
-        return dedupeProducts([newProduct, ...filtered]);
-      });
-
-      setPipelineStatus(null);
-      console.log(`Applied [${category}] ${product.title.slice(0, 50)} to room`);
-
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to apply product.");
-    } finally {
-      setPipelineRunning(false);
-    }
-  }
-
   async function handleGeneratePipeline() {
     if (!uploadedRoomImage) return setError("Please upload a room image first.");
     if (!roomType) return setError("Please select a room type.");
@@ -1304,173 +1235,15 @@ export default function Page() {
 
       const isInitialGeneration = !generatedRoomImage;
 
-      // ── Detect if this is a targeted edit request ─────────────────────────
-      // If a room already exists AND the theme text mentions a specific
-      // furniture piece → treat as targeted edit (single slot only)
-      const FURNITURE_KEYWORDS: Record<string, string> = {
-        sofa:         "sofa|couch|sectional|loveseat|seating",
-        coffee_table: "coffee table|center table|centre table",
-        rug:          "rug|carpet|floor covering",
-        lamp:         "lamp|light|lighting|floor lamp",
-        accent_chair: "chair|armchair|accent chair",
-        ottoman:      "ottoman|pouf|footrest",
-        side_table:   "side table|end table|nightstand",
-        shelf:        "shelf|shelving|bookcase|bookshelf",
-        cabinet:      "cabinet|sideboard|buffet|storage",
-        dining_table: "dining table",
-        dining_chair: "dining chair",
-        mirror:       "mirror",
-        curtain:      "curtain|drape|window treatment",
-      };
-
-      let targetedCategory: string | null = null;
-      const themeLC = theme.toLowerCase();
-      // Detect targeted edit from theme text regardless of whether room exists
-      // Keywords that indicate a targeted request rather than a full redesign
-      const TARGETED_PHRASES = [
-        "change", "replace", "swap", "update", "switch",
-        "want a different", "make it", "i want", "can you change",
-        "more luxury", "more modern", "more minimal", "darker", "lighter",
-      ];
-      const isFurnitureMention = Object.entries(FURNITURE_KEYWORDS).some(
-        ([, pattern]) => new RegExp(pattern, "i").test(themeLC)
-      );
-      const isTargetedPhrase = TARGETED_PHRASES.some(p => themeLC.includes(p));
-
-      if (isFurnitureMention && isTargetedPhrase) {
-        for (const [cat, pattern] of Object.entries(FURNITURE_KEYWORDS)) {
-          if (new RegExp(pattern, "i").test(themeLC)) {
-            targetedCategory = cat;
-            break;
-          }
-        }
-      }
-
-      // Targeted edit: specific furniture mentioned + action phrase detected
-      // Works on both first generation AND subsequent edits
-      const isTargetedEdit = !!targetedCategory;
-      console.log(isTargetedEdit
-        ? `Targeted edit detected — category: ${targetedCategory}, request: "${theme.slice(0, 80)}"`
-        : "Full pipeline mode"
-      );
-
-      // ── Targeted Edit Path ────────────────────────────────────────────────
-      if (isTargetedEdit && targetedCategory) {
-        setPipelineStatus(`Finding ${targetedCategory.replace(/_/g, " ")} options…`);
-
-        // Retrieve products for ONLY this category
-        const editRetrieval = await runRetrieveCatalogue({
-          roomType,
-          theme, // full user request as search query — finds matching style
-          seenHandles: [],
-          rotationCursor: 0,
-          pageSize: 12,
-        });
-
-        // Find best product for the target category
-        const candidates = editRetrieval.shortlist.filter(p => {
-          const cat   = (p.normalized_category || p.category || "").toLowerCase();
-          const title = (p.title || "").toLowerCase();
-          if (cat !== targetedCategory) return false;
-          if (!p.image_url) return false;
-          if (title.includes("console") || title.includes("entryway") || title.includes("living room set")) return false;
-          return true;
-        });
-
-        if (!candidates.length) {
-          throw new Error(`No matching ${targetedCategory.replace(/_/g, " ")} found. Try rephrasing your request.`);
-        }
-
-        // Pick first with reachable URL
-        let selectedProduct: typeof candidates[0] | null = null;
-        for (const p of candidates.slice(0, 5)) {
-          try {
-            const chk = await fetch(p.image_url as string, { method: "HEAD", signal: AbortSignal.timeout(4000) });
-            if (chk.ok) { selectedProduct = p; break; }
-          } catch { continue; }
-        }
-
-        if (!selectedProduct) throw new Error("Could not load product image. Please try again.");
-
-        console.log(`Targeted edit — placing: [${targetedCategory}] ${selectedProduct.title.slice(0, 50)}`);
-
-        // Get the base image to blend into:
-        // - If room already exists → use current generated room
-        // - If first generation → run Imagen first to preserve geometry
-        let baseImageForBlend = generatedRoomImage;
-        if (!baseImageForBlend) {
-          setPipelineStatus("Preserving your room geometry…");
-          try {
-            const inpaintResult = await runInpaintRoom({ imageBase64: uploadedRoomImage, theme, roomType });
-            baseImageForBlend = inpaintResult.generatedImage;
-            console.log("Imagen done for targeted edit — geometry preserved");
-          } catch (err) {
-            console.warn("Imagen failed for targeted edit:", err);
-            baseImageForBlend = uploadedRoomImage; // fallback
-          }
-        }
-
-        setPipelineStatus(`Placing ${selectedProduct.title.slice(0, 40)} into your room…`);
-
-        // Single-slot blend — ONLY the targeted category
-        const blendRes = await fetch("/api/multi-blend", {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            baseImage: baseImageForBlend,
-            slots:     [{ category: targetedCategory, title: selectedProduct.title, imageUrl: selectedProduct.image_url }],
-            theme,
-            roomType,
-          }),
-        });
-        const blendData = await blendRes.json();
-
-        if (!blendData?.ok || !blendData?.finalImage) {
-          throw new Error("Could not apply change. Please try again.");
-        }
-
-        // Update room and replace the product card for this category
-        setGeneratedRoomImage(blendData.finalImage);
-        const newProduct = { ...selectedProduct, pinned: true, source: "catalog" as const };
-        setPinnedProducts(prev => {
-          const filtered = prev.filter(p =>
-            (p.normalized_category || p.category || "").toLowerCase() !== targetedCategory
-          );
-          return dedupeProducts([newProduct, ...filtered]);
-        });
-        setDisplayedProducts(prev => dedupeProducts([newProduct, ...prev]));
-        // Update seenHandles so Load More works correctly after targeted edit
-        setSeenHandles(prev => { const m = new Set(prev); m.add(selectedProduct!.product_handle); return [...m]; });
-
-        // Populate retrievalResult so Load More works after targeted edit
-        // Use editRetrieval — it has products relevant to the user's request
-        if (!retrievalResult || !retrievalResult.shortlist?.length) {
-          setRetrievalResult(editRetrieval);
-          setDisplayedProducts(dedupeProducts([
-            newProduct,
-            ...editRetrieval.shortlist.filter(p => p.product_handle !== selectedProduct!.product_handle),
-          ]));
-          setSeenHandles(editRetrieval.shortlist.map(p => p.product_handle));
-          setRotationCursor(editRetrieval.nextRotationCursor ?? 0);
-        }
-
-        setPipelineStatus(null);
-        setPipelineRunning(false);
-        return; // Done — only targeted slot was changed
-      }
-
       // ── Step 1: Retrieve catalogue products ───────────────────────────────
-      // For targeted edits, use the existing retrievalResult if available
-      // For full pipeline, always retrieve fresh if theme changed
       const retrievalMatchesCurrentRequest = retrievalResult &&
-        retrievalResult.roomType === roomType &&
+        retrievalResult.roomType === roomType && retrievalResult.theme === theme &&
         retrievalResult.shortlist?.length > 0;
       let effectiveRetrieval = retrievalResult;
       if (!retrievalMatchesCurrentRequest) {
         setPipelineStatus("Finding matching products for your style…");
         const retrieval = await runRetrieveCatalogue({
-          roomType, theme: isTargetedEdit ? (retrievalResult?.theme || theme) : theme,
-          seenHandles: [], rotationCursor: 0, pageSize: 12,
+          roomType, theme, seenHandles: [], rotationCursor: 0, pageSize: 12,
         });
         effectiveRetrieval = retrieval;
         setRetrievalResult(retrieval);
@@ -1491,11 +1264,7 @@ export default function Page() {
 
         // ── Step 1: Select 1 product per slot from catalogue ─────────────────
         // Priority order: sofa → coffee_table → rug → lamp → accent_chair
-        // Only blend the 2 most impactful slots — sofa and coffee_table
-        // Rug and lamp are shown as IN ROOM cards but not blended into image
-        // This halves the blend time and reduces rate limit risk significantly
-        const SLOTS = ["sofa", "coffee_table"];
-        const CARD_ONLY_SLOTS = ["rug", "lamp"]; // shown in cards but not blended
+        const SLOTS = ["sofa", "rug", "coffee_table", "lamp"]; // lamp last — hardest blend
         const SECTIONAL_KW = ["sectional", "l shaped", "l-shaped", "modular", "3 seater", "4 seater", "large"];
         const SMALL_KW     = ["loveseat", "love seat", "small spaces", "2 seater", "settee"];
 
@@ -1546,24 +1315,10 @@ export default function Page() {
               }
             } catch { continue; }
           }
-          if (selectedSlots.length >= 2) break; // max 2 slots for blending
-        }
-
-        // Also pick rug and lamp for card display (not blended into image)
-        const cardOnlyProducts: Array<{ category: string; title: string; imageUrl: string; product: any }> = [];
-        for (const slot of CARD_ONLY_SLOTS) {
-          const candidates = effectiveRetrieval.shortlist.filter(p => {
-            const cat = (p.normalized_category || p.category || "").toLowerCase();
-            return cat === slot && p.image_url && !usedHandles.has(p.product_handle);
-          });
-          if (candidates[0]) {
-            cardOnlyProducts.push({ category: slot, title: candidates[0].title, imageUrl: candidates[0].image_url as string, product: candidates[0] });
-            usedHandles.add(candidates[0].product_handle);
-          }
+          if (selectedSlots.length >= 4) break; // max 4 slots to keep blend fast
         }
 
         console.log("Selected catalogue products for blending:", selectedSlots.map(s => `[${s.category}] ${s.title.slice(0, 40)}`));
-        console.log("Card-only products:", cardOnlyProducts.map(s => `[${s.category}] ${s.title.slice(0, 40)}`));
 
         // ── Step 2: Imagen inpainting — preserve room geometry ────────────────
         setPipelineStatus("Preserving your room geometry…");
@@ -1623,34 +1378,22 @@ export default function Page() {
         // Set the generated room image
         setGeneratedRoomImage(finalRoomImage);
 
-        // Build IN ROOM product cards — only from actually BLENDED products
-        // Card-only products (rug, lamp) go into displayedProducts WITHOUT pinned flag
-        const blendedSource = placedProducts.length > 0 ? placedProducts : selectedSlots;
-        const inRoomProducts = blendedSource.map(s => ({
+        // Build IN ROOM product cards directly from placed products
+        // Use placed products if available, otherwise fall back to all selected slots
+        const sourceProducts = placedProducts.length > 0 ? placedProducts : selectedSlots;
+        const inRoomProducts = sourceProducts.map(s => ({
           ...s.product,
           pinned:  true,
           source:  "catalog" as const,
+          // Ensure product_handle is set — dedupeProducts filters items without it
           product_handle: s.product?.product_handle || s.title.toLowerCase().replace(/\s+/g, "-"),
         }));
-
-        // Card-only products shown as recommended but NOT as IN ROOM
-        const cardOnlyDisplayProducts = cardOnlyProducts.map(s => ({
-          ...s.product,
-          pinned:  false, // NOT pinned — not in the room image
-          source:  "catalog" as const,
-          product_handle: s.product?.product_handle || s.title.toLowerCase().replace(/\s+/g, "-"),
-        }));
-
-        console.log("IN ROOM products:", inRoomProducts.map((p: any) => `[${p.normalized_category || p.category}] ${p.title?.slice(0, 40)}`));
-        console.log("Recommended (not in room):", cardOnlyDisplayProducts.map((p: any) => `[${p.normalized_category || p.category}] ${p.title?.slice(0, 40)}`));
+        console.log("IN ROOM products to display:", inRoomProducts.map((p: any) => `[${p.normalized_category || p.category}] ${p.title?.slice(0, 40)} handle=${p.product_handle}`));
 
         setPinnedProducts(dedupeProducts(inRoomProducts));
         setDisplayedProducts(dedupeProducts([
-          ...cardOnlyDisplayProducts,
-          ...effectiveRetrieval.shortlist.filter(p =>
-            !inRoomProducts.find((x: any) => x.product_handle === p.product_handle) &&
-            !cardOnlyDisplayProducts.find((x: any) => x.product_handle === p.product_handle)
-          ),
+          ...inRoomProducts,
+          ...effectiveRetrieval.shortlist.filter(p => !inRoomProducts.find((x: any) => x.product_handle === p.product_handle)),
         ]));
 
         const editPlan = buildClientEditPlan({ theme, editMode: false, catalogPinnedProducts: [] });
@@ -1954,8 +1697,6 @@ export default function Page() {
               <ActionButton onClick={() => void handleRetrieveCatalogue()} disabled={!canRetrieve} loading={retrieving} elapsed={retrieveElapsed} label="Find Matching Products" loadingLabel="Searching catalogue…" icon="🔍" variant="outline" />
               <ActionButton onClick={() => void handleGeneratePipeline()} disabled={!canGenerate || priceInvalid} loading={pipelineRunning} elapsed={pipelineElapsed} label={generatedRoomImage ? "Regenerate Room" : "Generate AI Room"} loadingLabel={pipelineStatus ?? "Working…"} icon="✨" variant="primary" />
               {pipelineStatus && !pipelineRunning && <p className="text-center text-xs text-stone-400">{pipelineStatus}</p>}
-
-
             </div>
 
             {/* Status summary */}
@@ -2133,8 +1874,6 @@ export default function Page() {
                             onAddToWishlist={handleAddToWishlist}
                             isInWishlist={wishlist.some((w) => w.product_handle === item.product_handle)}
                             onOpenModal={setModalProduct}
-                            canApplyToRoom={!!generatedRoomImage && !pipelineRunning}
-                            onApplyToRoom={handleApplyProductToRoom}
                           />
                         ))}
                       </div>
